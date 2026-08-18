@@ -38,6 +38,9 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+
       - name: Test with Coverage
         run: npm run test:coverage
 

@@ -4,12 +4,23 @@ import { z } from 'zod';
 
 import { ConfigurationError } from '../errors.js';
 import { LOG_LEVELS, type LogLevel } from '../logging/logger.js';
+import { DEFAULT_SURFACE_TIMEOUTS, type SurfaceTimeouts } from '../surfaces/timeouts.js';
 
 /**
  * The single place the process reads environment variables. Every other module
  * receives an `AppConfig` instead of touching `process.env`, which keeps secrets
  * on one code path and makes configuration trivially fakeable in tests.
  */
+
+/**
+ * Milliseconds, supplied as a string by the environment. Coerced rather than parsed by
+ * hand so that a non-numeric value is a configuration error instead of a `NaN` timeout
+ * that would make a wait never fire.
+ */
+const timeoutMs = z.coerce
+  .number({ error: 'must be a whole number of milliseconds' })
+  .int('must be a whole number of milliseconds')
+  .positive('must be greater than zero');
 
 const envSchema = z.object({
   // Optional so that lint, tests and offline commands run without credentials.
@@ -22,6 +33,11 @@ const envSchema = z.object({
     .default('info'),
   EVIDENCE_DIR: z.string().min(1, 'must not be empty').default('evidence'),
   CAPABILITIES_DIR: z.string().min(1, 'must not be empty').default('capabilities'),
+  // Surface waiting budgets. Defaults live with the surface so there is one source of
+  // truth for what a reasonable wait is.
+  SURFACE_NAVIGATION_TIMEOUT_MS: timeoutMs.default(DEFAULT_SURFACE_TIMEOUTS.navigationMs),
+  SURFACE_LOCATOR_TIMEOUT_MS: timeoutMs.default(DEFAULT_SURFACE_TIMEOUTS.locatorMs),
+  SURFACE_ACTION_TIMEOUT_MS: timeoutMs.default(DEFAULT_SURFACE_TIMEOUTS.actionMs),
 });
 
 export interface AppConfig {
@@ -30,6 +46,8 @@ export interface AppConfig {
   readonly evidenceDir: string;
   /** Absolute path to the directory holding capability artifacts. */
   readonly capabilitiesDir: string;
+  /** Waiting budgets handed to a `ComputerSurface`. */
+  readonly surfaceTimeouts: SurfaceTimeouts;
   /** Present only when supplied; never logged or serialized. */
   readonly anthropicApiKey?: string;
 }
@@ -42,6 +60,7 @@ export type SafeConfig = {
   readonly logLevel: LogLevel;
   readonly evidenceDir: string;
   readonly capabilitiesDir: string;
+  readonly surfaceTimeouts: SurfaceTimeouts;
   readonly anthropicApiKeyPresent: boolean;
 };
 
@@ -89,6 +108,11 @@ export function loadConfig(
     logLevel: parsed.data.LOG_LEVEL,
     evidenceDir: toAbsolutePath(parsed.data.EVIDENCE_DIR, cwd),
     capabilitiesDir: toAbsolutePath(parsed.data.CAPABILITIES_DIR, cwd),
+    surfaceTimeouts: {
+      navigationMs: parsed.data.SURFACE_NAVIGATION_TIMEOUT_MS,
+      locatorMs: parsed.data.SURFACE_LOCATOR_TIMEOUT_MS,
+      actionMs: parsed.data.SURFACE_ACTION_TIMEOUT_MS,
+    },
   };
 
   const apiKey = parsed.data.ANTHROPIC_API_KEY;
@@ -118,6 +142,7 @@ export function toSafeConfig(config: AppConfig): SafeConfig {
     logLevel: config.logLevel,
     evidenceDir: config.evidenceDir,
     capabilitiesDir: config.capabilitiesDir,
+    surfaceTimeouts: config.surfaceTimeouts,
     anthropicApiKeyPresent: config.anthropicApiKey !== undefined,
   };
 }

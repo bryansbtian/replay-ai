@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { loadConfig, requireAnthropicApiKey, toSafeConfig } from '../src/config/index.js';
 import { ConfigurationError } from '../src/errors.js';
+import { DEFAULT_SURFACE_TIMEOUTS } from '../src/surfaces/index.js';
 
 const CWD = '/workspace';
 
@@ -48,6 +49,38 @@ describe('loadConfig', () => {
 
   it('rejects an empty directory value instead of silently using the default', () => {
     expect(() => loadConfig({ EVIDENCE_DIR: '' }, { cwd: CWD })).toThrow(/EVIDENCE_DIR/);
+  });
+
+  it('defaults the surface timeouts so a surface can be built without configuration', () => {
+    const config = loadConfig({}, { cwd: CWD });
+
+    expect(config.surfaceTimeouts).toEqual(DEFAULT_SURFACE_TIMEOUTS);
+  });
+
+  it('reads surface timeout overrides from the environment', () => {
+    const config = loadConfig(
+      {
+        SURFACE_NAVIGATION_TIMEOUT_MS: '20000',
+        SURFACE_LOCATOR_TIMEOUT_MS: '2500',
+        SURFACE_ACTION_TIMEOUT_MS: '7000',
+      },
+      { cwd: CWD },
+    );
+
+    expect(config.surfaceTimeouts).toEqual({
+      navigationMs: 20_000,
+      locatorMs: 2_500,
+      actionMs: 7_000,
+    });
+  });
+
+  it('rejects a surface timeout that is not a positive whole number', () => {
+    expect(() => loadConfig({ SURFACE_LOCATOR_TIMEOUT_MS: 'soon' }, { cwd: CWD })).toThrow(
+      /SURFACE_LOCATOR_TIMEOUT_MS/,
+    );
+    expect(() => loadConfig({ SURFACE_ACTION_TIMEOUT_MS: '0' }, { cwd: CWD })).toThrow(
+      /SURFACE_ACTION_TIMEOUT_MS/,
+    );
   });
 
   it('rejects an empty API key rather than treating it as absent', () => {
