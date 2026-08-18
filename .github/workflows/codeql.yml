@@ -31,7 +31,7 @@ jobs:
       actions: read
       security-events: write
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       # build-mode: none is correct for JavaScript and TypeScript: CodeQL reads the
       # sources directly, so no npm install or tsc run is needed here.
