@@ -94,6 +94,13 @@ export class FileEvidenceRecorder implements EvidenceRecorder {
     }
 
     await this.writeMetadata({ status: 'running' });
+    if (record.kind === 'discovery') {
+      await this.recordEvent({
+        event: 'discovery_started',
+        fields: { goal: record.goal, target: record.target, policy: record.policy },
+      });
+      return;
+    }
     await this.recordEvent({
       event: 'run_started',
       fields: {
@@ -182,10 +189,7 @@ export class FileEvidenceRecorder implements EvidenceRecorder {
 
     const manifest = {
       runId: this.runId,
-      capabilityId: record.capabilityId,
-      capabilityVersion: record.capabilityVersion,
-      capabilityName: record.capabilityName,
-      inputNames: record.inputNames,
+      ...identityOf(record),
       policy: record.policy,
       startedAt: this.startedAt,
       completedAt: completedAt(outcome, this.now),
@@ -202,6 +206,25 @@ export class FileEvidenceRecorder implements EvidenceRecorder {
       throw new EvidenceWriteError(path, describeFailure(error), { cause: error });
     }
   }
+}
+
+/**
+ * The part of the manifest that says what was running.
+ *
+ * Split by kind rather than merged, so a discovery manifest does not carry empty
+ * capability fields that a reader would have to interpret.
+ */
+function identityOf(record: RunStartRecord): Record<string, unknown> {
+  if (record.kind === 'discovery') {
+    return { kind: 'discovery', goal: record.goal, target: record.target };
+  }
+  return {
+    kind: 'replay',
+    capabilityId: record.capabilityId,
+    capabilityVersion: record.capabilityVersion,
+    capabilityName: record.capabilityName,
+    inputNames: record.inputNames,
+  };
 }
 
 function completedAt(

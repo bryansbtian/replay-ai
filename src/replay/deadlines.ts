@@ -1,6 +1,3 @@
-import type { CapabilityStep } from '../artifacts/index.js';
-import type { SurfaceTimeouts } from '../surfaces/index.js';
-
 /**
  * How long a step gets, and how that limit is enforced.
  *
@@ -14,22 +11,19 @@ import type { SurfaceTimeouts } from '../surfaces/index.js';
  * ```
  *
  * The budget is handed to the surface, so a failure is the surface's own specific error.
- * It is *also* enforced from the outside, so a surface that ignores its budget, or one
- * that is wedged, still cannot make a replay hang.
+ * It is *also* enforced from the outside by the shared deadline guard, so a surface that
+ * ignores its budget, or one that is wedged, still cannot make a replay hang.
  */
+import type { CapabilityStep } from '../artifacts/index.js';
+import { DeadlineExceededError, withDeadline } from '../execution/index.js';
+import type { SurfaceTimeouts } from '../surfaces/index.js';
 
 /**
- * The outer bound sits half again above the budget, and never less than a second above
- * it.
- *
- * It is a guard against a wedged surface, not a competitor to the surface's own timeout.
- * A target with several locator strategies pays a little overhead per strategy on top of
- * the budget it divides between them, so a bound that only just cleared the budget would
- * turn a surface reporting "the summary never appeared" into the engine reporting "no
- * response", which is a worse answer to the same question.
+ * Re-exported rather than redefined: the guard itself moved to `execution/` when
+ * discovery needed the same bound, and replay keeps importing it from one name so that
+ * `instanceof DeadlineExceededError` means the same thing in both loops.
  */
-const OUTER_BOUND_FACTOR = 1.5;
-const OUTER_BOUND_GRACE_MS = 1_000;
+export { DeadlineExceededError, withDeadline };
 
 /**
  * A classification probe gets a quarter of the locator budget.
@@ -41,17 +35,6 @@ const OUTER_BOUND_GRACE_MS = 1_000;
  * seconds deciding what to call the failure it already has.
  */
 const PROBE_BUDGET_DIVISOR = 4;
-
-/** Raised by `withDeadline` when a surface call outlived its whole budget. */
-export class DeadlineExceededError extends Error {
-  readonly timeoutMs: number;
-
-  constructor(timeoutMs: number) {
-    super(`Operation did not settle within ${timeoutMs}ms`);
-    this.name = 'DeadlineExceededError';
-    this.timeoutMs = timeoutMs;
-  }
-}
 
 export interface BudgetOptions {
   readonly timeouts: SurfaceTimeouts;
@@ -92,28 +75,4 @@ export function stepBudgetMs(step: CapabilityStep, options: BudgetOptions): numb
     return options.stepTimeoutMs;
   }
   return defaultBudgetMs(step, options.timeouts);
-}
-
-/**
- * Resolves with the operation, or rejects with `DeadlineExceededError` once the budget
- * and its grace have passed.
- *
- * The timer is always cleared, so a finished replay leaves nothing holding the event
- * loop open.
- */
-export async function withDeadline<T>(operation: () => Promise<T>, timeoutMs: number): Promise<T> {
-  const bound = Math.max(timeoutMs * OUTER_BOUND_FACTOR, timeoutMs + OUTER_BOUND_GRACE_MS);
-  let timer: NodeJS.Timeout | undefined;
-
-  const guard = new Promise<never>((_resolve, reject) => {
-    timer = setTimeout(() => {
-      reject(new DeadlineExceededError(timeoutMs));
-    }, bound);
-  });
-
-  try {
-    return await Promise.race([operation(), guard]);
-  } finally {
-    clearTimeout(timer);
-  }
 }

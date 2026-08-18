@@ -26,10 +26,13 @@ export {
   InvalidCapabilityIdError,
   type ArtifactIssue,
 } from './errors.js';
+export { parameterNameSchema } from './identifiers.js';
 export { deserializeCapabilityArtifact, serializeCapabilityArtifact } from './serialization.js';
 export {
   CAPABILITY_STEP_TYPES,
+  checkpointSchema,
   RISK_LEVELS,
+  targetSchema,
   type CapabilityStep,
   type CapabilityStepType,
   type CapabilityValue,

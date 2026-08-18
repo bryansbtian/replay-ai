@@ -10,7 +10,9 @@ export { FileEvidenceRecorder, type FileEvidenceRecorderOptions } from './FileEv
 export {
   NO_EVIDENCE,
   RUN_EVENT_NAMES,
+  type DiscoveryStartRecord,
   type EvidenceRecorder,
+  type ReplayStartRecord,
   type RunEvent,
   type RunEventName,
   type RunOutcomeRecord,
