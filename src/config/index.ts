@@ -4,6 +4,7 @@ import { z } from 'zod';
 
 import { ConfigurationError } from '../errors.js';
 import { LOG_LEVELS, type LogLevel } from '../logging/logger.js';
+import { policyConfigSchema, type PolicyConfig } from '../policy/index.js';
 import { DEFAULT_SURFACE_TIMEOUTS, type SurfaceTimeouts } from '../surfaces/timeouts.js';
 
 /**
@@ -22,6 +23,20 @@ const timeoutMs = z.coerce
   .int('must be a whole number of milliseconds')
   .positive('must be greater than zero');
 
+/**
+ * A comma-separated environment value, as the list it names.
+ *
+ * Empty entries are dropped so that a trailing comma or a blank variable is a shorter
+ * list rather than a list containing "", which would be an allowlist entry matching
+ * nothing and confusing to debug.
+ */
+const commaSeparated = z.string().transform((value) => {
+  return value
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0);
+});
+
 const envSchema = z.object({
   // Optional so that lint, tests and offline commands run without credentials.
   // Commands that call Anthropic obtain it through `requireAnthropicApiKey`.
@@ -38,7 +53,63 @@ const envSchema = z.object({
   SURFACE_NAVIGATION_TIMEOUT_MS: timeoutMs.default(DEFAULT_SURFACE_TIMEOUTS.navigationMs),
   SURFACE_LOCATOR_TIMEOUT_MS: timeoutMs.default(DEFAULT_SURFACE_TIMEOUTS.locatorMs),
   SURFACE_ACTION_TIMEOUT_MS: timeoutMs.default(DEFAULT_SURFACE_TIMEOUTS.actionMs),
+  // Safety policy. Every one is optional, and every default is the cautious one, so an
+  // unset variable can only make this deployment refuse more. The values are validated
+  // by the policy schema rather than here, so there is one definition of a valid policy.
+  POLICY_ALLOWED_HOSTS: commaSeparated.optional(),
+  POLICY_ALLOWED_SCHEMES: commaSeparated.optional(),
+  POLICY_ALLOWED_ROUTES: commaSeparated.optional(),
+  POLICY_ALLOWED_ACTIONS: commaSeparated.optional(),
+  POLICY_RISK_SAFE: z.string().optional(),
+  POLICY_RISK_RISKY: z.string().optional(),
+  POLICY_RISK_IRREVERSIBLE: z.string().optional(),
 });
+
+type RawEnv = z.infer<typeof envSchema>;
+
+/**
+ * Builds the policy from the environment.
+ *
+ * Absent keys are dropped rather than passed as `undefined`, so the policy schema's own
+ * defaults apply and there is one place that decides what "unset" means.
+ */
+function toPolicyConfig(env: RawEnv): PolicyConfig {
+  const risk: Record<string, unknown> = {};
+  if (env.POLICY_RISK_SAFE !== undefined) {
+    risk['safe'] = env.POLICY_RISK_SAFE;
+  }
+  if (env.POLICY_RISK_RISKY !== undefined) {
+    risk['risky'] = env.POLICY_RISK_RISKY;
+  }
+  if (env.POLICY_RISK_IRREVERSIBLE !== undefined) {
+    risk['irreversible'] = env.POLICY_RISK_IRREVERSIBLE;
+  }
+
+  const raw: Record<string, unknown> = {};
+  if (env.POLICY_ALLOWED_HOSTS !== undefined) {
+    raw['allowedHosts'] = env.POLICY_ALLOWED_HOSTS;
+  }
+  if (env.POLICY_ALLOWED_SCHEMES !== undefined) {
+    raw['allowedSchemes'] = env.POLICY_ALLOWED_SCHEMES;
+  }
+  if (env.POLICY_ALLOWED_ROUTES !== undefined) {
+    raw['allowedRoutes'] = env.POLICY_ALLOWED_ROUTES;
+  }
+  if (env.POLICY_ALLOWED_ACTIONS !== undefined) {
+    raw['allowedActions'] = env.POLICY_ALLOWED_ACTIONS;
+  }
+  if (Object.keys(risk).length > 0) {
+    raw['riskPolicy'] = risk;
+  }
+
+  const parsed = policyConfigSchema.safeParse(raw);
+  if (!parsed.success) {
+    throw new ConfigurationError(`Invalid safety policy:\n${formatIssues(parsed.error)}`, {
+      cause: parsed.error,
+    });
+  }
+  return parsed.data;
+}
 
 export interface AppConfig {
   readonly logLevel: LogLevel;
@@ -48,6 +119,8 @@ export interface AppConfig {
   readonly capabilitiesDir: string;
   /** Waiting budgets handed to a `ComputerSurface`. */
   readonly surfaceTimeouts: SurfaceTimeouts;
+  /** What this deployment permits. The authority no artifact can overrule. */
+  readonly policy: PolicyConfig;
   /** Present only when supplied; never logged or serialized. */
   readonly anthropicApiKey?: string;
 }
@@ -61,6 +134,7 @@ export type SafeConfig = {
   readonly evidenceDir: string;
   readonly capabilitiesDir: string;
   readonly surfaceTimeouts: SurfaceTimeouts;
+  readonly policy: PolicyConfig;
   readonly anthropicApiKeyPresent: boolean;
 };
 
@@ -113,6 +187,7 @@ export function loadConfig(
       locatorMs: parsed.data.SURFACE_LOCATOR_TIMEOUT_MS,
       actionMs: parsed.data.SURFACE_ACTION_TIMEOUT_MS,
     },
+    policy: toPolicyConfig(parsed.data),
   };
 
   const apiKey = parsed.data.ANTHROPIC_API_KEY;
@@ -143,6 +218,7 @@ export function toSafeConfig(config: AppConfig): SafeConfig {
     evidenceDir: config.evidenceDir,
     capabilitiesDir: config.capabilitiesDir,
     surfaceTimeouts: config.surfaceTimeouts,
+    policy: config.policy,
     anthropicApiKeyPresent: config.anthropicApiKey !== undefined,
   };
 }

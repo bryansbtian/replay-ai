@@ -28,6 +28,7 @@ export {
 } from './errors.js';
 export { deserializeCapabilityArtifact, serializeCapabilityArtifact } from './serialization.js';
 export {
+  CAPABILITY_STEP_TYPES,
   RISK_LEVELS,
   type CapabilityStep,
   type CapabilityStepType,

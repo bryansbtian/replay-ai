@@ -16,6 +16,7 @@ import {
   type JsonObject,
 } from './support/artifacts.js';
 import { FakeSurface, HangingSurface, type FakeBehavior } from './support/fakeSurface.js';
+import { permissivePolicy } from './support/policy.js';
 
 /**
  * The engine itself: ordering, checkpoints, the final success condition, outputs,
@@ -30,6 +31,7 @@ function engineWith(surface: FakeSurface, options: { stepTimeoutMs?: number } = 
   return new ReplayEngine({
     surface,
     logger: silentLogger(),
+    policy: permissivePolicy(),
     timeouts: TEST_TIMEOUTS,
     replayId: 'replay-under-test',
     ...options,
@@ -461,6 +463,7 @@ describe('retries', () => {
     const engine = new ReplayEngine({
       surface: new FakeSurface(),
       logger,
+      policy: permissivePolicy(),
       timeouts: TEST_TIMEOUTS,
     });
 
@@ -563,6 +566,7 @@ describe('logging', () => {
     const engine = new ReplayEngine({
       surface: workingSurface(),
       logger,
+      policy: permissivePolicy(),
       timeouts: TEST_TIMEOUTS,
     });
 
@@ -582,6 +586,7 @@ describe('logging', () => {
     const engine = new ReplayEngine({
       surface: new FakeSurface({ waitFor: () => false }),
       logger,
+      policy: permissivePolicy(),
       timeouts: TEST_TIMEOUTS,
     });
 

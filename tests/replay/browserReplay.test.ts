@@ -15,6 +15,7 @@ import type { PlaywrightSession } from '../../src/surfaces/playwright/index.js';
 import { openSurface, TEST_TIMEOUTS } from '../surfaces/support/fixture.js';
 
 import { silentLogger } from './support/artifacts.js';
+import { permissivePolicy } from './support/policy.js';
 
 /**
  * The Phase 4 proof, and the only suite here that touches a browser.
@@ -84,6 +85,7 @@ async function replay(artifact: CapabilityArtifact, memberId: string): Promise<R
   const engine = new ReplayEngine({
     surface,
     logger: silentLogger(),
+    policy: permissivePolicy(),
     timeouts: TEST_TIMEOUTS,
   });
   return await engine.run(artifact, { memberId });

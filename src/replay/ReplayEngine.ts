@@ -5,7 +5,9 @@ import type {
   CapabilityArtifact,
   CapabilityStep,
 } from '../artifacts/index.js';
+import { NO_EVIDENCE, type EvidenceRecorder } from '../evidence/index.js';
 import type { Logger } from '../logging/logger.js';
+import type { PolicyDecision, PolicyEngine } from '../policy/index.js';
 import {
   DEFAULT_SURFACE_TIMEOUTS,
   type ComputerSurface,
@@ -18,6 +20,7 @@ import { probeBudgetMs, stepBudgetMs } from './deadlines.js';
 import { InvocationInputError } from './errors.js';
 import { validateInvocationInputs, type InvocationInputs } from './InputValidator.js';
 import { OutputCollector } from './OutputCollector.js';
+import { isPolicyDenial } from './policyGate.js';
 import { isRetrySafe, RecoveryPlanner, riskOf } from './RecoveryPlanner.js';
 import type {
   FailureKind,
@@ -29,6 +32,7 @@ import type {
   ReplayStepRecord,
   ReplaySuccess,
 } from './ReplayResult.js';
+import { RunJournal } from './RunJournal.js';
 import { StepExecutor, type StepFailure } from './StepExecutor.js';
 
 /**
@@ -69,6 +73,13 @@ import { StepExecutor, type StepFailure } from './StepExecutor.js';
 export interface ReplayEngineOptions {
   readonly surface: ComputerSurface;
   readonly logger: Logger;
+  /**
+   * The safety boundary. Required, because an engine with an optional guardrail has a
+   * mode in which there is none, and that mode is the one that ships by accident.
+   */
+  readonly policy: PolicyEngine;
+  /** Where the run is recorded. Defaults to writing nothing. */
+  readonly evidence?: EvidenceRecorder;
   /** Waiting budgets, normally `AppConfig.surfaceTimeouts`. */
   readonly timeouts?: SurfaceTimeouts;
   /** Applies to every step that declares no budget of its own. */
@@ -87,6 +98,7 @@ interface RunContext {
   readonly replayId: string;
   readonly artifact: CapabilityArtifact;
   readonly logger: Logger;
+  readonly journal: RunJournal;
   readonly started: number;
   readonly completedSteps: ReplayStepRecord[];
   readonly recoveries: RecoveryRecord[];
@@ -126,13 +138,19 @@ function withoutAbsentKeys<T extends object>(value: T): WithoutUndefined<T> {
 export class ReplayEngine {
   private readonly surface: ComputerSurface;
   private readonly logger: Logger;
+  private readonly policy: PolicyEngine;
+  private readonly evidence: EvidenceRecorder;
   private readonly timeouts: SurfaceTimeouts;
   private readonly stepTimeoutMs: number | undefined;
   private readonly replayId: string | undefined;
+  /** Policy answers awaiting a journal write, see `onPolicyDecision`. */
+  private readonly decisions: { step: CapabilityStep; decision: PolicyDecision }[] = [];
 
   constructor(options: ReplayEngineOptions) {
     this.surface = options.surface;
     this.logger = options.logger;
+    this.policy = options.policy;
+    this.evidence = options.evidence ?? NO_EVIDENCE;
     this.timeouts = options.timeouts ?? DEFAULT_SURFACE_TIMEOUTS;
     this.stepTimeoutMs = options.stepTimeoutMs;
     this.replayId = options.replayId;
@@ -156,6 +174,7 @@ export class ReplayEngine {
       replayId,
       artifact,
       logger,
+      journal: new RunJournal({ logger, evidence: this.evidence }),
       started: performance.now(),
       completedSteps: [],
       recoveries: [],
@@ -163,7 +182,7 @@ export class ReplayEngine {
 
     // Input names only. A value can be a credential, and an input can be declared
     // sensitive, so nothing in this record can carry one.
-    logger.info('Replay Started', {
+    context.journal.runStarted({
       capabilityName: artifact.name,
       stepCount: artifact.steps.length,
       inputNames: artifact.inputs.map((input) => input.name),
@@ -173,13 +192,14 @@ export class ReplayEngine {
       return await this.execute(context, inputs);
     } catch (error) {
       if (error instanceof InvocationInputError) {
-        return this.fail(context, {
+        // Nothing was touched, so there is no screen worth capturing.
+        return await this.fail(context, {
           code: 'REPLAY_INPUTS_INVALID',
           kind: 'terminal',
           message: error.message,
         });
       }
-      return this.fail(context, {
+      return await this.fail(context, {
         code: 'REPLAY_UNEXPECTED_STATE',
         kind: 'terminal',
         message: 'Replay stopped on a failure it could not classify',
@@ -199,10 +219,17 @@ export class ReplayEngine {
     const checkpoints = new CheckpointEvaluator({ surface: this.surface });
     const executor = new StepExecutor({
       surface: this.surface,
-      logger,
+      journal: context.journal,
       checkpoints,
       inputs,
       outputs,
+      policy: this.policy,
+      artifact,
+      onPolicyDecision: (step, decision) => {
+        // Queued rather than awaited: the executor's decision path stays synchronous,
+        // and an evidence write must never sit between a policy answer and acting on it.
+        this.decisions.push({ step, decision });
+      },
     });
     const recovery = new RecoveryPlanner({
       surface: this.surface,
@@ -240,13 +267,13 @@ export class ReplayEngine {
     step: CapabilityStep,
     budgetMs: number,
   ): Promise<ReplayResult | undefined> {
-    const { logger } = context;
     let attempts = 0;
 
     for (;;) {
-      logger.info('Step Started', { stepId: step.id, stepType: step.type, budgetMs });
+      await context.journal.stepStarted(step, budgetMs);
       const outcome = await executor.execute(step, budgetMs);
       attempts += outcome.attempts;
+      await this.flushDecisions(context);
 
       if (outcome.ok) {
         context.completedSteps.push({
@@ -255,12 +282,7 @@ export class ReplayEngine {
           attempts,
           durationMs: outcome.durationMs,
         });
-        logger.info('Step Completed', {
-          stepId: step.id,
-          stepType: step.type,
-          attempts,
-          durationMs: outcome.durationMs,
-        });
+        await context.journal.stepCompleted(step, attempts, outcome.durationMs);
         return undefined;
       }
 
@@ -271,7 +293,13 @@ export class ReplayEngine {
       if (resolved.kind === 'result') {
         return resolved.result;
       }
-      return this.reportStepFailure(context, step, attempts, outcome.failure, resolved.failureKind);
+      return await this.reportStepFailure(
+        context,
+        step,
+        attempts,
+        outcome.failure,
+        resolved.failureKind,
+      );
     }
   }
 
@@ -287,12 +315,12 @@ export class ReplayEngine {
 
     if (!outcome.passed) {
       logger.warn('Success Condition Failed', describeOutcome(outcome));
+      await context.journal.checkpoint('successCondition', outcome);
       const declared = await this.findDeclaredState(context);
       if (declared !== undefined) {
         return declared;
       }
-      context.logger.error('Hard Failure Classified', { code: 'REPLAY_SUCCESS_CONDITION_FAILED' });
-      return this.fail(context, {
+      return await this.fail(context, {
         code: 'REPLAY_SUCCESS_CONDITION_FAILED',
         kind: 'terminal',
         message: `Every step ran, but the capability expected ${outcome.expected} and the surface showed ${outcome.observed}`,
@@ -300,14 +328,13 @@ export class ReplayEngine {
         observed: outcome.observed,
       });
     }
-    logger.info('Success Condition Passed', describeOutcome(outcome));
+    await context.journal.checkpoint('successCondition', outcome);
 
     const collected = outputs.collect();
     if (!collected.ok) {
       // A run that reached its success state but could not produce what it promised is
       // still a failure: half an answer is worse than none, because a caller cannot tell.
-      context.logger.error('Hard Failure Classified', { code: collected.problem.code });
-      return this.fail(context, {
+      return await this.fail(context, {
         code: collected.problem.code,
         kind: 'terminal',
         message: collected.problem.message,
@@ -326,7 +353,7 @@ export class ReplayEngine {
       recoveries: context.recoveries,
       durationMs: this.elapsed(context),
     };
-    logger.info('Replay Completed', {
+    context.journal.runCompleted({
       status: result.status,
       outputNames: Object.keys(result.outputs),
       completedSteps: result.completedSteps.length,
@@ -348,13 +375,18 @@ export class ReplayEngine {
     step: CapabilityStep,
     failure: StepFailure,
   ): Promise<StepResolution> {
-    context.logger.warn('Step Failed', {
-      stepId: step.id,
-      stepType: step.type,
+    await context.journal.stepFailed(step, {
       code: failure.code,
       expected: failure.expected,
       observed: failure.observed,
     });
+
+    // A guardrail is not a state to interpret or an obstacle to clear. Asking the page
+    // what it meant, or dismissing something and trying again, would both be the
+    // automation arguing with the rule that just stopped it.
+    if (isPolicyDenial(failure.code)) {
+      return { kind: 'fail', failureKind: 'policy' };
+    }
 
     // A control that could not be found or operated is an automation problem whatever
     // the screen says, so only a settled state is worth interpreting.
@@ -388,7 +420,7 @@ export class ReplayEngine {
 
     if (!isRetrySafe(step)) {
       // Clearing a dialog and then repeating a submit is how one request becomes two.
-      logger.warn('Recovery Not Attempted', {
+      context.journal.note('Recovery Not Attempted', {
         stepId: step.id,
         stepType: step.type,
         risk: riskOf(step),
@@ -410,7 +442,7 @@ export class ReplayEngine {
     }
 
     const { definition } = recognized;
-    logger.warn('Recoverable Condition Detected', {
+    await context.journal.recoveryAttempted({
       code: definition.code,
       stepId: step.id,
       description: definition.description,
@@ -438,17 +470,29 @@ export class ReplayEngine {
   }
 
   /** Turns a step failure into the run's final failure result. */
-  private reportStepFailure(
+  private async reportStepFailure(
     context: RunContext,
     step: CapabilityStep,
     attempts: number,
     failure: StepFailure,
     kind: FailureKind,
-  ): ReplayFailure {
+  ): Promise<ReplayFailure> {
+    if (kind === 'policy') {
+      return await this.fail(context, {
+        code: failure.code,
+        kind,
+        message: failure.message,
+        stepId: step.id,
+        stepType: step.type,
+        expected: failure.expected,
+        observed: failure.observed,
+      });
+    }
+
     if (kind === 'recoveryExhausted') {
       const codes = context.recoveries.map((record) => record.code);
-      context.logger.error('Recovery Exhausted', { stepId: step.id, codes });
-      return this.fail(context, {
+      await context.journal.recoveryExhausted({ stepId: step.id, codes });
+      return await this.fail(context, {
         code: 'REPLAY_RECOVERY_EXHAUSTED',
         kind,
         message: `Step "${step.id}" (${step.type}) met a recognized condition that did not clear within its declared attempts`,
@@ -461,12 +505,7 @@ export class ReplayEngine {
       });
     }
 
-    context.logger.error('Hard Failure Classified', {
-      stepId: step.id,
-      stepType: step.type,
-      code: failure.code,
-    });
-    return this.fail(context, {
+    return await this.fail(context, {
       code: failure.code,
       kind,
       message: failure.message,
@@ -492,7 +531,7 @@ export class ReplayEngine {
     context: RunContext,
     stepId?: string,
   ): Promise<ReplayResult | undefined> {
-    const { artifact, logger } = context;
+    const { artifact } = context;
     if (artifact.businessOutcomes.length === 0) {
       return undefined;
     }
@@ -505,8 +544,8 @@ export class ReplayEngine {
       }
 
       if (outcome.disposition === 'failure') {
-        logger.error('Declared Failure State Detected', { code: outcome.code, stepId });
-        return this.fail(context, {
+        await context.journal.declaredFailureDetected({ code: outcome.code, stepId });
+        return await this.fail(context, {
           code: outcome.code,
           kind: 'terminal',
           message: outcome.description,
@@ -514,7 +553,7 @@ export class ReplayEngine {
         });
       }
 
-      logger.info('Business Outcome Detected', { code: outcome.code, stepId });
+      await context.journal.businessOutcomeDetected({ code: outcome.code, stepId });
       const result: ReplayBusinessOutcome = withoutAbsentKeys({
         status: 'businessOutcome' as const,
         replayId: context.replayId,
@@ -527,7 +566,7 @@ export class ReplayEngine {
         durationMs: this.elapsed(context),
         stepId,
       });
-      logger.info('Replay Completed', {
+      context.journal.runCompleted({
         status: result.status,
         code: result.code,
         completedSteps: result.completedSteps.length,
@@ -554,7 +593,17 @@ export class ReplayEngine {
     }
   }
 
-  private fail(context: RunContext, detail: FailureDetail): ReplayFailure {
+  /**
+   * The single funnel every failure result passes through, and therefore the one place
+   * the richer failure signal is captured.
+   *
+   * One screenshot per run, taken at the moment the run gives up, rather than one per
+   * step. A capture of every step would be mostly identical images and a much larger
+   * chance of storing something sensitive, and the frame that matters is the last one.
+   */
+  private async fail(context: RunContext, detail: FailureDetail): Promise<ReplayFailure> {
+    await this.captureFailureFrame(context, detail);
+
     const result: ReplayFailure = withoutAbsentKeys({
       status: 'failure' as const,
       replayId: context.replayId,
@@ -573,7 +622,7 @@ export class ReplayEngine {
       attempts: detail.attempts,
       cause: detail.cause,
     });
-    context.logger.error('Replay Completed', {
+    context.journal.runCompleted({
       status: result.status,
       kind: result.kind,
       code: result.code,
@@ -583,6 +632,28 @@ export class ReplayEngine {
       durationMs: result.durationMs,
     });
     return result;
+  }
+
+  /**
+   * Captures the failing screen, except where there is nothing to capture.
+   *
+   * A rejected invocation never touched the surface, and a policy denial happened before
+   * the action, so a frame taken then shows whatever preceded it. The second is still
+   * worth having: it is what the operator sees when asking why the run stopped.
+   */
+  private async captureFailureFrame(context: RunContext, detail: FailureDetail): Promise<void> {
+    if (detail.code === 'REPLAY_INPUTS_INVALID') {
+      return;
+    }
+    await context.journal.captureFailure(this.surface, String(detail.code));
+  }
+
+  /** Writes the policy answers the executor queued while it was running. */
+  private async flushDecisions(context: RunContext): Promise<void> {
+    const pending = this.decisions.splice(0, this.decisions.length);
+    for (const entry of pending) {
+      await context.journal.policyEvaluated(entry.step, entry.decision);
+    }
   }
 
   /** See `probeBudgetMs`: classification asks about a settled page, it does not wait. */

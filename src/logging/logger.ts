@@ -1,9 +1,15 @@
+import { redactRecord, REDACTED } from '../redaction.js';
+
 /**
  * Small structured logger.
  *
  * One JSON object per line, with a timestamp, a level, a message and arbitrary
  * structured fields. Field values whose key looks secret-bearing are redacted so
  * that a caller cannot leak an API key by logging a config object by accident.
+ *
+ * The redaction rules come from `src/redaction.ts` rather than living here, because the
+ * evidence recorder has to apply exactly the same ones. A secret that is scrubbed from a
+ * durable record and printed to a terminal has not been scrubbed.
  */
 
 export const LOG_LEVELS = ['debug', 'info', 'warn', 'error'] as const;
@@ -17,12 +23,7 @@ const LEVEL_RANK: Readonly<Record<LogLevel, number>> = {
   error: 40,
 };
 
-export const REDACTED = '[redacted]';
-
-const SECRET_KEY_PATTERN = /(key|token|secret|password|passwd|credential|auth|cookie|session)/i;
-
-/** Depth guard so a deeply nested or self-referential field cannot stall logging. */
-const MAX_DEPTH = 6;
+export { REDACTED };
 
 export type LogFields = Readonly<Record<string, unknown>>;
 
@@ -44,58 +45,11 @@ export interface LoggerOptions {
   readonly bindings?: LogFields;
 }
 
-/**
- * A field is redacted when its name looks secret-bearing and its value could carry
- * content. Booleans are exempt: a presence flag such as `anthropicApiKeyPresent`
- * is exactly the kind of field this logger exists to make loggable.
- */
-function isRedactable(key: string, value: unknown): boolean {
-  if (typeof value === 'boolean') {
-    return false;
-  }
-  return SECRET_KEY_PATTERN.test(key);
-}
-
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-function sanitize(value: unknown, depth: number): unknown {
-  if (depth > MAX_DEPTH) {
-    return '[truncated]';
-  }
-  if (value instanceof Error) {
-    return { name: value.name, message: value.message };
-  }
-  if (Array.isArray(value)) {
-    return value.map((item) => sanitize(item, depth + 1));
-  }
-  if (isPlainObject(value)) {
-    return sanitizeObject(value, depth);
-  }
-  if (typeof value === 'bigint') {
-    return value.toString();
-  }
-  return value;
-}
-
 function describeCause(cause: unknown): string {
   if (cause instanceof Error) {
     return `${cause.name}: ${cause.message}`;
   }
   return 'unknown serialization failure';
-}
-
-function sanitizeObject(value: LogFields, depth: number): Record<string, unknown> {
-  const result: Record<string, unknown> = {};
-  for (const [key, nested] of Object.entries(value)) {
-    if (isRedactable(key, nested)) {
-      result[key] = REDACTED;
-      continue;
-    }
-    result[key] = sanitize(nested, depth + 1);
-  }
-  return result;
 }
 
 interface RecordHeader {
@@ -106,7 +60,7 @@ interface RecordHeader {
 
 function render(header: RecordHeader, fields: LogFields): string {
   try {
-    return JSON.stringify({ ...header, ...sanitizeObject(fields, 0) });
+    return JSON.stringify({ ...header, ...redactRecord(fields) });
   } catch (cause) {
     // A hostile field (throwing getter, unsupported value) must never drop the
     // record or take down the caller. Emit the header plus what went wrong.

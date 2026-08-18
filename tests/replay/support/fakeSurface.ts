@@ -70,7 +70,9 @@ export class FakeSurface implements ComputerSurface {
   async navigate(url: string, options: SurfaceCallOptions = {}): Promise<ActionResult> {
     this.record({ method: 'navigate', subject: url, ...timeout(options) });
     await this.behavior.navigate?.(url);
-    return { action: 'navigate', durationMs: 1, url };
+    // Reports where the surface ended up rather than where it was asked to go, which is
+    // what lets a suite script a redirect by setting `url`.
+    return { action: 'navigate', durationMs: 1, url: this.url() };
   }
 
   // Not `async`: a scripted surface has nothing to await, and the contract only asks

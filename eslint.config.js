@@ -131,6 +131,36 @@ export default tseslint.config(
     },
   },
   {
+    // Architectural boundary: the safety guardrail and the run record sit below
+    // everything that executes anything, so a future discovery loop is held to the same
+    // boundary rather than growing its own. Repeats the Playwright rule because a later
+    // block replaces the earlier one.
+    files: ['src/policy/**/*.ts', 'src/evidence/**/*.ts'],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        {
+          patterns: [
+            {
+              group: [
+                '**/llm',
+                '**/llm/**',
+                '**/discovery',
+                '**/discovery/**',
+                '**/replay',
+                '**/replay/**',
+                '@anthropic-ai/*',
+              ],
+              message:
+                'policy/ and evidence/ must sit below execution: they may not depend on replay, discovery, or a model SDK.',
+            },
+            PLAYWRIGHT_ONLY_IN_ADAPTER,
+          ],
+        },
+      ],
+    },
+  },
+  {
     files: ['tests/**/*.ts'],
     rules: {
       '@typescript-eslint/explicit-module-boundary-types': 'off',

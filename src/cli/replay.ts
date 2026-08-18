@@ -1,5 +1,6 @@
+import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
-import { resolve } from 'node:path';
+import { relative, resolve } from 'node:path';
 
 import {
   deserializeCapabilityArtifact,
@@ -7,9 +8,11 @@ import {
   type CapabilityArtifact,
   type InputDefinition,
 } from '../artifacts/index.js';
-import { loadConfig } from '../config/index.js';
+import { loadConfig, type AppConfig } from '../config/index.js';
 import { ReplayAiError } from '../errors.js';
+import { FileEvidenceRecorder } from '../evidence/index.js';
 import { createLogger } from '../logging/logger.js';
+import { StaticPolicyEngine, summarizePolicy } from '../policy/index.js';
 import { ReplayEngine, type InvocationInputs, type ReplayResult } from '../replay/index.js';
 import { launchPlaywrightSession, PlaywrightSurface } from '../surfaces/playwright/index.js';
 
@@ -173,6 +176,48 @@ export interface ReplayCommandDeps {
 }
 
 /**
+ * A short human summary printed alongside the machine-readable result.
+ *
+ * Deliberately three lines: whoever just ran a replay wants to know what happened and
+ * where to look, and neither of those should require piping the output through a JSON
+ * tool. Nothing here can carry an invocation value.
+ */
+function summarize(result: ReplayResult, evidencePath: string): string {
+  const lines = [
+    '',
+    'Replay Completed',
+    '',
+    `  Run ID:   ${result.replayId}`,
+    `  Status:   ${describeStatus(result)}`,
+    `  Evidence: ${evidencePath}`,
+    '',
+  ];
+  return lines.join('\n');
+}
+
+function describeStatus(result: ReplayResult): string {
+  if (result.status === 'success') {
+    return 'Success';
+  }
+  if (result.status === 'businessOutcome') {
+    return `Business Outcome (${result.code})`;
+  }
+  if (result.kind === 'policy') {
+    return `Blocked By Policy (${result.code})`;
+  }
+  return `Failure (${result.code})`;
+}
+
+/** The evidence path, relative to the working directory when that reads better. */
+function describePath(path: string): string {
+  const local = relative(process.cwd(), path);
+  if (local.startsWith('..')) {
+    return path;
+  }
+  return local;
+}
+
+/**
  * Runs one replay and prints its structured result.
  *
  * The result is the whole of stdout: it names the capability, the steps that completed,
@@ -196,18 +241,74 @@ export async function runReplayCommand(
     write: (line) => deps.stderr(`${line}\n`),
   });
 
+  // One identifier for the run and its evidence directory: two would mean correlating
+  // them by timestamp, which is exactly what a run id exists to avoid.
+  const runId = randomUUID();
+  const evidence = new FileEvidenceRecorder({ evidenceDir: config.evidenceDir, runId });
+  await evidence.start({
+    runId,
+    capabilityId: artifact.id,
+    capabilityVersion: artifact.version,
+    capabilityName: artifact.name,
+    inputNames: artifact.inputs.map((input) => input.name),
+    policy: summarizePolicy(config.policy),
+  });
+
   const session = await launchPlaywrightSession({ headless: args.headless });
+  let result: ReplayResult;
   try {
     const surface = new PlaywrightSurface({
       page: session.page,
       logger,
       timeouts: config.surfaceTimeouts,
     });
-    const engine = new ReplayEngine({ surface, logger, timeouts: config.surfaceTimeouts });
-    const result = await engine.run(artifact, inputs);
-    deps.stdout(`${JSON.stringify(result, null, 2)}\n`);
-    return result;
+    const engine = new ReplayEngine({
+      surface,
+      logger,
+      policy: buildPolicy(config),
+      evidence,
+      timeouts: config.surfaceTimeouts,
+      replayId: runId,
+    });
+    result = await engine.run(artifact, inputs);
   } finally {
     await session.close();
   }
+
+  // Finalizing the manifest throws if it cannot be written, and the command lets that
+  // reach the caller: a run directory that never says how the run ended is an
+  // observability failure worth hearing about, not a warning to bury.
+  await evidence.complete({
+    status: result.status,
+    ...outcomeDetail(result),
+    durationMs: result.durationMs,
+    completedSteps: result.completedSteps.length,
+    recoveries: result.recoveries.length,
+  });
+
+  deps.stdout(`${JSON.stringify(result, null, 2)}\n`);
+  deps.stderr(summarize(result, describePath(evidence.directory)));
+  for (const warning of evidence.warnings) {
+    deps.stderr(`Evidence Warning: ${warning}\n`);
+  }
+  return result;
+}
+
+/** The policy in force for this command, built from configuration and nothing else. */
+function buildPolicy(config: AppConfig): StaticPolicyEngine {
+  return new StaticPolicyEngine(config.policy);
+}
+
+function outcomeDetail(result: ReplayResult): Record<string, string | string[]> {
+  if (result.status === 'success') {
+    return { outputNames: Object.keys(result.outputs) };
+  }
+  if (result.status === 'businessOutcome') {
+    return { code: result.code };
+  }
+  const detail: Record<string, string> = { code: String(result.code), kind: result.kind };
+  if (result.stepId !== undefined) {
+    detail['stepId'] = result.stepId;
+  }
+  return detail;
 }
