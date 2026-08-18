@@ -156,6 +156,7 @@ config projection and the logger, the CLI command surface and its exit codes, an
   workflows/ci.yml      Lint, format, typecheck, coverage, build
   workflows/codeql.yml  CodeQL scanning on push, pull request, and weekly
   dependabot.yml        Weekly npm and GitHub Actions updates
+  SECURITY.md           How to report a vulnerability privately
 src/
   artifacts/            Capability artifact schema and persistence (Phase 2)
   cli/                  Entry point and command surface
