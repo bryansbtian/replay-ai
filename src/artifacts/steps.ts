@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-import { TARGET_ROLES, type Target } from '../surfaces/index.js';
+import { TARGET_ROLES, type SurfaceCondition, type Target } from '../surfaces/index.js';
 
 import { parameterNameSchema, stepIdSchema } from './identifiers.js';
 
@@ -302,3 +302,13 @@ export type CapabilityStepType = CapabilityStep['type'];
 type SurfaceTarget<T extends Target> = T;
 
 export type ParsedTarget = SurfaceTarget<z.infer<typeof targetSchema>>;
+
+/**
+ * The same constraint for checkpoints: a parsed checkpoint is a Phase 2
+ * `SurfaceCondition`, so a replay hands a stored condition straight to a surface. Both
+ * sides describe one question ("does the surface show this state?"), and this alias is
+ * what stops them from answering it differently.
+ */
+type SurfaceStateCondition<C extends SurfaceCondition> = C;
+
+export type ParsedCheckpoint = SurfaceStateCondition<z.infer<typeof checkpointSchema>>;

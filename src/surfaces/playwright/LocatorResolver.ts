@@ -22,6 +22,12 @@ export interface ResolvedTarget {
   readonly attempts: readonly StrategyAttempt[];
 }
 
+/** One way the target could be found, before anything has been waited on. */
+export interface TargetCandidate {
+  readonly strategy: LocatorStrategy;
+  readonly locator: Locator;
+}
+
 export interface LocatorResolverOptions {
   readonly page: Page;
   /** Ceiling for one strategy. The whole target may cost this once per strategy. */
@@ -96,11 +102,12 @@ export class LocatorResolver {
    * wrong control. When no strategy matches exactly one element the failure names every
    * attempt, so the target can be repaired without reproducing the run.
    */
-  async resolve(target: Target): Promise<ResolvedTarget> {
+  async resolve(target: Target, timeoutMs?: number): Promise<ResolvedTarget> {
     const attempts: StrategyAttempt[] = [];
+    const budget = timeoutMs ?? this.timeoutMs;
 
     for (const strategy of target.strategies) {
-      const attempt = await this.attempt(strategy, target.description);
+      const attempt = await this.attempt(strategy, target.description, budget);
       attempts.push(attempt.record);
       this.logger.debug('locator strategy attempted', {
         target: target.description,
@@ -122,8 +129,27 @@ export class LocatorResolver {
     throw new TargetNotFoundError(target.description, attempts);
   }
 
+  /**
+   * Every locator this target could resolve through, in stored order, without waiting
+   * on any of them.
+   *
+   * Exposed so that a state check can ask whether a target is on screen without going
+   * through `resolve`, whose exactly-one rule is the right rule for acting on a control
+   * and the wrong one for asserting that something is displayed. Building the locator
+   * stays here either way, so the surface never learns how a strategy becomes a query.
+   */
+  candidates(target: Target): TargetCandidate[] {
+    return target.strategies.map((strategy) => {
+      return { strategy, locator: buildLocator(this.page, strategy, target.description) };
+    });
+  }
+
   /** Runs one strategy. Returns a locator only when exactly one element matched. */
-  private async attempt(strategy: LocatorStrategy, targetDescription: string): Promise<Attempt> {
+  private async attempt(
+    strategy: LocatorStrategy,
+    targetDescription: string,
+    timeoutMs: number,
+  ): Promise<Attempt> {
     const elapsed = startStopwatch();
     const locator = buildLocator(this.page, strategy, targetDescription);
 
@@ -131,7 +157,7 @@ export class LocatorResolver {
       // State-based wait: give the element this strategy's whole budget to appear rather
       // than sleeping and hoping. `first()` keeps the wait out of Playwright strict mode,
       // so an ambiguous match is reported here instead of thrown as a library error.
-      await locator.first().waitFor({ state: 'visible', timeout: this.timeoutMs });
+      await locator.first().waitFor({ state: 'visible', timeout: timeoutMs });
     } catch {
       return {
         record: {

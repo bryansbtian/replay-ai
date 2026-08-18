@@ -178,7 +178,9 @@ describe('LocatorResolver failures', () => {
     expect(failure).toBeInstanceOf(TargetNotFoundError);
     if (failure instanceof TargetNotFoundError) {
       const [attempt] = failure.attempts;
-      expect(attempt?.durationMs).toBeGreaterThanOrEqual(TEST_TIMEOUTS.locatorMs);
+      // A millisecond of slack: the browser can report its timeout a fraction early, and
+      // the point of the assertion is that the whole budget was spent, not the exact tick.
+      expect(attempt?.durationMs).toBeGreaterThanOrEqual(TEST_TIMEOUTS.locatorMs - 1);
       expect(attempt?.durationMs).toBeLessThan(TEST_TIMEOUTS.locatorMs * 4);
     }
   });

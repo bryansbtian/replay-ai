@@ -82,6 +82,44 @@ change rather than a code change. There are no fixed sleeps in the surface; the 
 delay in the repository is inside the test fixture page, which reveals an element late
 specifically to prove the surface waits for state rather than for a clock.
 
+## Why The Surface Answers Conditions
+
+`ComputerSurface` gained one method in Phase 4: `waitFor(condition)`, answering whether a
+target is visible, whether it contains some text, whether some text is on screen, or
+whether the location matches.
+
+It went there rather than into replay because of what the alternative would have cost.
+Replay can only ask a surface what it exposes, and the acting methods answer the wrong
+question: `resolve` insists on exactly one match, which is right for deciding what to
+click and wrong for asking whether something is displayed. Building a state check out of
+`extract` and `observe` would also have meant polling, and a polling interval inside
+replay is precisely the clock-based waiting the whole surface layer exists to avoid. Only
+an implementation can wait on a state natively.
+
+The condition model therefore lives in `surfaces/types.ts`, and the artifact's
+`checkpointSchema` parses into it, checked by the same compile-time alias that ties a
+stored target to `Target`. One model, two readers, no conversion layer, and no chance of
+the two drifting apart. Every method also gained an optional per-call `timeoutMs`, which
+is what lets a stored step say it legitimately takes longer without slowing the surface
+down for everything else.
+
+## How Replay Is Layered
+
+```text
+Capability Artifact -> ReplayEngine -> StepExecutor -> ComputerSurface -> PlaywrightSurface
+```
+
+Each arrow points at something that knows less about the workflow than its caller. The
+engine owns the sequence and the result. The executor owns one step and its attempts, and
+decides nothing about the workflow. The surface owns translation and waiting. Nothing in
+`src/replay/` imports Playwright, `src/llm/`, `src/discovery/`, or a model SDK, and the
+only surface import the whole package makes is `../surfaces/index.js`, which
+`tests/architecture.test.ts` asserts directly.
+
+`src/execution/` stays empty. It is meant to be the shared waist between discovery and
+replay, and with one caller a shared waist is an abstraction with nothing on the other
+side of it. It earns its place when discovery arrives.
+
 ## Where The Artifact Sits
 
 The capability artifact is the waist of the pipeline: discovery writes it, replay reads
@@ -259,6 +297,24 @@ workflow that has changed, which is an escalation rather than something to retry
 Operational policy belongs to the engine and its configuration, not to a document that
 gets committed once and read for months.
 
+## What Replay Proved About The Schema
+
+Phase 4 executed the schema without changing it, which was the point of designing it
+before there was an engine. Two parts earned their keep immediately. The structured value
+model meant parameter resolution is a map lookup rather than a parser, so a reference that
+does not resolve is impossible for a validated artifact rather than a runtime surprise.
+And the single condition model turned out to serve all four of its jobs through one
+evaluator, so a `wait`, a `checkpoint`, a business outcome, and the success condition are
+one code path with four callers.
+
+One limit surfaced. A surface extracts text, and an artifact may declare an output as a
+`number`, so replay needs a conversion the schema does not describe. It is kept as narrow
+as it can be (a canonical numeric literal, or the words true and false) and a value it
+cannot read is a failure rather than a guess. A screen showing `$1,024.50` fails today.
+The repair is a format declaration on the output definition, which is additive, and it is
+deferred because inventing one before a workflow needs it would be guessing at the shape
+of the problem.
+
 ## Safety Metadata
 
 Acting steps carry `risk`: `safe`, `risky`, or `irreversible`, defaulting to `safe`.
@@ -357,33 +413,136 @@ schema version bump, which is what the version is being saved for.
 
 # Determinism & Error Handling
 
-No engine exists yet, so what follows is what the artifact contract already fixes, and
-what is still open.
+Determinism here is a property of decisions, not of the application. Replay makes none.
 
-Determinism here is a property of decisions, not of the application. A replay will make
-no choices: the steps are ordered and stored, each target's strategy order is stored and
-never re-sorted, every value is either a literal in the file or a named input supplied by
-the caller, and there is no branching construct in the schema. The same artifact and the
-same inputs therefore issue the same operations in the same order. What the application
-does in response is its own business, which is why the artifact ends in a required
-success condition rather than an assumption.
+The execution plan is `artifact.steps`, read in stored order. Nothing reorders it, skips a
+step, substitutes a target, invents a missing step, alters a value, or modifies the
+artifact while running it. Each target's strategy order is the recorded order and is never
+re-sorted. Every value a step types is either a literal in the file or a named input the
+caller supplied. There is no branching construct in the schema, so there is no plan to
+compute. The same artifact and the same inputs therefore issue the same operations in the
+same order, which `engine.test.ts` asserts by replaying twice and comparing the recorded
+surface calls.
 
-Two decisions in this phase serve that directly. Waiting is state-based: a `wait` step
-holds a condition, and the schema has no way to express a sleep, so a workflow cannot
-come to depend on a clock. And validation is total before execution: an artifact that
-references an input nobody declared, or assigns an output nobody promised, is rejected
-while a person is reading it rather than halfway through a run.
+## Why Replay Has No LLM Dependency
 
-Error handling in the artifact package follows the existing foundation: `ReplayAiError`
-subclasses with stable codes (`ARTIFACT_INVALID`, `ARTIFACT_NOT_FOUND`,
-`ARTIFACT_ID_INVALID`) and a preserved `cause`. `ArtifactValidationError` carries every
-problem it found with the path of each, because an artifact with three mistakes should
-take one round trip to fix, not three.
+A model in the decision loop would make every run cost money, take seconds per step, and
+produce a different trace each time, and it would make the failure mode "the model chose
+differently today", which is not debuggable. The whole value of freezing a discovered
+workflow into an artifact is that the artifact is now the decision, made once and
+reviewable.
 
-The full execution taxonomy, retryable versus terminal versus escalation-worthy, is still
-future work. The artifact contributes two inputs to it: the wait-versus-checkpoint
-distinction (the state never arrived, versus the workflow went somewhere else), and the
-declared business outcomes, which will let a run end with an answer instead of an error.
+So the rule is structural rather than cultural: nothing under `src/replay/` may import
+`src/llm/`, `src/discovery/`, or `@anthropic-ai/*`. It is enforced by a scoped ESLint
+`no-restricted-imports` rule and, so that the build fails even if the lint config drifts,
+by tests in `tests/architecture.test.ts` that scan the imports. The same tests assert that
+replay never imports Playwright, and that the only surface module it imports is the
+contract. `browserReplay.test.ts` runs the full chain with no network access at all.
+
+## Parameter Resolution
+
+Two sources, and nothing else: a literal baked into the artifact, or the value of a
+declared input. No template syntax, no expression evaluation, no `eval`. A resolver that
+could compute would be a decision made at replay time.
+
+Invocation inputs are validated before the surface is touched, so a caller mistake cannot
+leave a half-run workflow behind in the application. Unknown inputs are rejected rather
+than ignored: a key nobody declared means the caller believes this capability does
+something it does not, and ignoring it converts that belief into a silently wrong run.
+There is no coercion, because the artifact states the type it wants. An omitted optional
+input resolves to the empty string, which clears the field the `fill` targets; Phase 3 has
+no default-value model, and failing instead would make `required: false` unusable.
+
+## Checkpoint And Success Verification
+
+This is the part that makes a replay worth trusting. An action that returned without
+throwing proves a control was found and operated, not that the workflow reached the state
+it was recorded to reach, and those two differ every time an application answers a click
+with an error banner.
+
+Every replay evaluates the artifact's required `successCondition`, and a replay whose
+success condition fails is never reported as a success even when every step ran. Along the
+way `checkpoint` steps assert state and `wait` steps wait for it, through the same four
+conditions and the same evaluator. Waiting is state-based throughout: the surface waits on
+the state natively, so replay contains no polling loop and no sleep.
+
+Evaluation is not reduced to a boolean. An outcome carries a Title Case rendering of what
+was expected next to a bounded rendering of what the surface showed, which is what turns a
+failure into something actionable without reproducing the run:
+
+```text
+REPLAY_CHECKPOINT_FAILED  step "confirm-lookup-screen"
+  expected: Text "Corporate Member Lookup" Is Visible
+  observed: Not Visible
+```
+
+## Timeouts
+
+The budget hierarchy reuses what the earlier phases already established, with no third set
+of numbers invented for replay:
+
+```text
+step.execution.timeoutMs  ->  replay-wide override  ->  SurfaceTimeouts from AppConfig
+```
+
+The budget is passed to the surface, so a failure is the surface's own specific error, and
+it is also enforced from the outside with a deadline. The outer bound fires a moment after
+the inner one, so a caller normally sees the specific failure, but a surface that is
+wedged or that ignores its budget still cannot make a replay hang. That is worth the
+duplication: the inner budget is for good messages, the outer one is a guarantee.
+
+## Retries
+
+Only what the artifact declared, capped by Phase 3 at three attempts. A retry repeats the
+identical action with the identical target and the identical resolved value: no backoff
+(a fixed delay is the clock-based waiting the surface layer exists to avoid), no
+alternative target, no fallback action, and certainly no model asked to recover. A retry
+that changed what was being attempted would not be replay.
+
+The conservative half is which steps repeat at all. Reading and asserting always can:
+`extract`, `wait`, and `checkpoint` cannot change the application. An acting step repeats
+only when the artifact calls it `safe`. A declared retry on a `risky` step is logged and
+not applied, because a second submit is how one request becomes two, and Phase 3 already
+refuses a retry on an `irreversible` step. The risk model is a description rather than a
+permission, so replay reads it in the direction that can only reduce what happens.
+
+## What Failure Handling Exists Now
+
+Three outcomes, deliberately small so Phase 5 extends rather than replaces them:
+
+- **success**: every step ran, the success condition held, and every declared output was
+  produced and readable as its declared type;
+- **businessOutcome**: a condition the artifact already declared was observed, so the run
+  ends with an answer rather than an escalation;
+- **failure**: a stable code, the capability, the step, the action, the attempt count, the
+  expectation, the observation, and a rendered one-line cause.
+
+Business outcomes are detected only where they can hide: after a `wait` or `checkpoint`
+condition did not hold, or after the success condition failed. A control that could not be
+found or operated is an automation problem whatever the screen says, so it is never
+reclassified as a business answer.
+
+Nothing carries a secret outwards. A raw browser exception never reaches a caller; `cause`
+is a rendered summary. Invocation values are never logged and never appear in a result,
+only input names. No failure message echoes a value it rejected, because an invalid value
+can still be a secret.
+
+## What Is Deferred To Phase 5
+
+- **The full taxonomy.** Success, business outcome, recoverable condition, and hard
+  failure is the eventual four-way split; today recoverable and hard failures share one
+  status distinguished by code. The types were kept small on purpose so adding the
+  distinction is additive.
+- **Escalation and handoff.** Replay reports; nothing yet decides that a person should
+  take the session over.
+- **Evidence.** Runs log structured events, but nothing is persisted, no screenshot is
+  captured on failure, and there is no redaction layer. Building one now would duplicate
+  work Phase 6 is scoped to do properly.
+- **Policy.** The engine enforces no domain allowlist and no action classification. The
+  artifact's `risk` field is read only in the one direction that reduces what happens.
+- **Output formats.** A `number` output must be a canonical numeric literal today.
+- **Discovery.** Nothing writes an artifact yet; the committed examples were authored by
+  hand.
 
 # Heterogeneity & Multi-Tenant
 
@@ -412,7 +571,10 @@ out, and the artifact was kept extensible enough that leaving it out costs nothi
 
 # Escalation & Handoff
 
-Placeholder. `src/handoff/` is empty by design.
+Placeholder. `src/handoff/` is empty by design. Replay reports an outcome and stops;
+nothing yet decides that a person should take a session over. The Phase 2 decision to keep
+the browser session outside the surface is what will make that possible without a redesign,
+because no automation object believes it owns the session lifetime.
 
 This section will eventually document:
 
@@ -452,8 +614,16 @@ the design question is what could ever end up in one:
 The risk levels (`safe`, `risky`, `irreversible`) are a description and not a permission.
 That distinction is the point: an artifact declaring itself safe grants nothing, and the
 policy engine that will read it stays external and authoritative. The one safety rule
-enforced today lives in validation, where it belongs, because it is a property of the
-document: an irreversible step may not declare a retry.
+enforced in validation is a property of the document: an irreversible step may not declare
+a retry.
+
+Phase 4 adds the execution half, and reads the risk field only in the direction that can
+reduce what happens. A step is repeated automatically only when it cannot change the
+application, or when the artifact calls it `safe`; a declared retry on a `risky` step is
+logged and dropped. Nothing in replay treats `safe` as authority to do anything. Beyond
+that, invocation values never reach a log or a result, only input names; a raw browser
+exception never reaches a caller; and a failure message never echoes a value it rejected,
+because an invalid value can still be a secret.
 
 Still to come:
 
@@ -516,7 +686,29 @@ Artifact-schema cuts:
 - **No backoff framework.** Attempts capped at three, no curve, no jitter, no
   per-error-class policy. Operational tuning belongs to the engine, not to a document
   committed once and read for months.
-- **No artifact CLI command.** Validation and storage are a library API in this phase;
-  a command belongs with the discovery and replay commands that will use it.
+- **No artifact CLI command.** Validation and storage are a library API; a command belongs
+  with the discovery command that will use it. `replay-ai replay` loads an artifact by path
+  or by id already.
+
+Replay-layer cuts:
+
+- **No AI recovery, fuzzy matching, or fallback action.** A retry repeats the identical
+  operation or the run stops. Anything else would be a decision made at replay time, which
+  is the one thing the architecture forbids.
+- **No polling loop and no sleep.** State-based waiting belongs to the surface, which is
+  why `waitFor` was added to the contract rather than built out of `observe` in replay.
+- **No shared execution layer yet.** `src/execution/` stays empty: with one caller, a
+  shared waist is an abstraction with nothing on the other side of it.
+- **No parallel or branching execution.** Steps are a list, executed in order. A workflow
+  whose shape depends on what it finds is a discovery problem.
+- **No output format declarations.** A `number` output must be a canonical numeric
+  literal; `$1,024.50` fails rather than being guessed at. The repair is an additive field
+  on the output definition, and inventing it before a workflow needs it would be guessing
+  at the shape of the problem.
+- **No evidence persistence or screenshot on failure.** Runs emit structured log events
+  only. A half-built evidence layer would duplicate work Phase 6 is scoped to do with
+  redaction included.
+- **No CLI framework.** Argument parsing is about sixty lines of `switch`. A dependency
+  would be larger than the thing it replaced.
 
 Cuts made in later phases will be recorded here as they happen.

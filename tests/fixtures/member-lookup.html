@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Demo Member Lookup</title>
+  </head>
+  <body>
+    <h1>Demo Member Lookup</h1>
+
+    <form id="lookup-form">
+      <label for="member-id">Member ID</label>
+      <input
+        id="member-id"
+        name="memberId"
+        type="text"
+        placeholder="Enter A Member ID"
+        data-testid="member-id"
+      />
+      <button type="submit" id="search-button" data-testid="member-search">Search</button>
+    </form>
+
+    <div id="result-slot"></div>
+
+    <script>
+      // A tiny in-page directory. "24680" formats its balance the way a real console
+      // often does, which is what a replay must refuse to reinterpret rather than guess
+      // a number out of.
+      const MEMBERS = {
+        12345: { name: 'Ada Lovelace', balance: '5234.17' },
+        67890: { name: 'Grace Hopper', balance: '118.05' },
+        24680: { name: 'Alan Turing', balance: '$1,024.50' },
+      };
+
+      const form = document.getElementById('lookup-form');
+      const input = document.getElementById('member-id');
+      const slot = document.getElementById('result-slot');
+
+      function renderSummary(member) {
+        const section = document.createElement('section');
+        section.id = 'member-summary';
+        section.setAttribute('role', 'region');
+        section.setAttribute('aria-label', 'Member Summary');
+        section.setAttribute('data-testid', 'member-summary');
+        section.innerHTML =
+          '<h2>Member Summary</h2>' +
+          '<p data-field="member-name">' +
+          member.name +
+          '</p>' +
+          '<p data-field="savings-balance">' +
+          member.balance +
+          '</p>';
+        slot.appendChild(section);
+      }
+
+      function renderNotFound() {
+        const message = document.createElement('p');
+        message.setAttribute('data-testid', 'member-error');
+        message.textContent = 'No Member Matches That Reference';
+        slot.appendChild(message);
+      }
+
+      form.addEventListener('submit', (event) => {
+        event.preventDefault();
+        slot.replaceChildren();
+        const reference = input.value.trim();
+
+        // The answer arrives after the click returns, so a replay that assumed the
+        // click was enough would read an empty page. The wait step is what makes it
+        // correct, not a sleep.
+        window.setTimeout(() => {
+          const member = MEMBERS[reference];
+          if (member === undefined) {
+            renderNotFound();
+            return;
+          }
+          renderSummary(member);
+        }, 200);
+      });
+    </script>
+  </body>
+</html>

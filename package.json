@@ -11,6 +11,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "dev": "tsx watch --env-file-if-exists=.env src/cli/main.ts",
+    "replay": "tsx --env-file-if-exists=.env src/cli/main.ts replay",
     "lint": "eslint . --max-warnings=0",
     "lint:fix": "eslint . --fix",
     "format": "prettier --write .",

@@ -1,0 +1,208 @@
+{
+  "schemaVersion": "1",
+  "id": "lookup-demo-member",
+  "name": "Lookup Demo Member",
+  "description": "Searches the demo member console by member id and reads the member name and savings balance from the summary.",
+  "version": 1,
+  "application": {
+    "name": "Demo Member Console",
+    "entryPoint": "https://demo.replay-ai.test/members"
+  },
+  "inputs": [
+    {
+      "name": "memberId",
+      "type": "string",
+      "required": true,
+      "description": "Member id printed on the demo member record, for example 12345.",
+      "sensitive": false
+    }
+  ],
+  "outputs": [
+    {
+      "name": "memberName",
+      "type": "string",
+      "description": "Full name shown on the member summary."
+    },
+    {
+      "name": "savingsBalance",
+      "type": "number",
+      "description": "Savings balance shown on the member summary."
+    }
+  ],
+  "steps": [
+    {
+      "id": "open-member-lookup",
+      "type": "navigate",
+      "url": "https://demo.replay-ai.test/members",
+      "risk": "safe"
+    },
+    {
+      "id": "confirm-lookup-screen",
+      "type": "checkpoint",
+      "condition": {
+        "type": "targetVisible",
+        "target": {
+          "description": "Member Lookup Heading",
+          "strategies": [
+            {
+              "kind": "role",
+              "role": "heading",
+              "name": "Demo Member Lookup"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "enter-member-id",
+      "type": "fill",
+      "target": {
+        "description": "Member ID Field",
+        "strategies": [
+          {
+            "kind": "role",
+            "role": "textbox",
+            "name": "Member ID"
+          },
+          {
+            "kind": "label",
+            "text": "Member ID"
+          },
+          {
+            "kind": "placeholder",
+            "text": "Enter A Member ID"
+          },
+          {
+            "kind": "attribute",
+            "attribute": "data-testid",
+            "value": "member-id"
+          }
+        ]
+      },
+      "value": {
+        "source": "input",
+        "name": "memberId"
+      },
+      "risk": "safe"
+    },
+    {
+      "id": "submit-member-search",
+      "type": "click",
+      "target": {
+        "description": "Search Button",
+        "strategies": [
+          {
+            "kind": "role",
+            "role": "button",
+            "name": "Search",
+            "exact": true
+          },
+          {
+            "kind": "attribute",
+            "attribute": "data-testid",
+            "value": "member-search"
+          }
+        ]
+      },
+      "risk": "safe",
+      "execution": {
+        "retry": {
+          "maxAttempts": 2
+        }
+      }
+    },
+    {
+      "id": "await-member-summary",
+      "type": "wait",
+      "condition": {
+        "type": "targetVisible",
+        "target": {
+          "description": "Member Summary Region",
+          "strategies": [
+            {
+              "kind": "role",
+              "role": "region",
+              "name": "Member Summary"
+            },
+            {
+              "kind": "attribute",
+              "attribute": "data-testid",
+              "value": "member-summary"
+            }
+          ]
+        }
+      },
+      "execution": {
+        "timeoutMs": 5000
+      }
+    },
+    {
+      "id": "read-member-name",
+      "type": "extract",
+      "target": {
+        "description": "Member Name Value",
+        "strategies": [
+          {
+            "kind": "attribute",
+            "attribute": "data-field",
+            "value": "member-name"
+          }
+        ]
+      },
+      "output": "memberName"
+    },
+    {
+      "id": "read-savings-balance",
+      "type": "extract",
+      "target": {
+        "description": "Savings Balance Value",
+        "strategies": [
+          {
+            "kind": "attribute",
+            "attribute": "data-field",
+            "value": "savings-balance"
+          }
+        ]
+      },
+      "output": "savingsBalance"
+    }
+  ],
+  "successCondition": {
+    "type": "targetContainsText",
+    "target": {
+      "description": "Member Summary Region",
+      "strategies": [
+        {
+          "kind": "role",
+          "role": "region",
+          "name": "Member Summary"
+        },
+        {
+          "kind": "attribute",
+          "attribute": "data-testid",
+          "value": "member-summary"
+        }
+      ]
+    },
+    "text": "Member Summary"
+  },
+  "businessOutcomes": [
+    {
+      "code": "MEMBER_NOT_FOUND",
+      "description": "The demo console reports that no member matches the supplied id.",
+      "condition": {
+        "type": "textVisible",
+        "text": "No Member Matches That Reference"
+      }
+    }
+  ],
+  "metadata": {
+    "createdAt": "2026-08-18T00:00:00.000Z",
+    "updatedAt": "2026-08-18T00:00:00.000Z",
+    "tags": [
+      "demo",
+      "member",
+      "read-only"
+    ]
+  }
+}
