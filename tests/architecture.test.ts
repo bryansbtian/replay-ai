@@ -16,6 +16,10 @@ import { describe, expect, it } from 'vitest';
  * 3. A capability artifact is the contract between discovery and replay, so the artifact
  *    package may depend on neither, nor on a model SDK. Its only allowed dependencies
  *    are the surface-neutral target model and the shared error base.
+ * 4. The safety boundary and the evidence recorder sit below everything that executes
+ *    anything, so neither may reach the llm layer, the discovery loop, a model SDK, or
+ *    the replay engine. That is what lets the discovery loop of a later phase be held to
+ *    the same boundary rather than growing a second, weaker one.
  */
 
 const PLAYWRIGHT_PATTERN = /^(playwright|playwright-core|@playwright\/)/;
@@ -95,6 +99,24 @@ describe('module boundaries', () => {
     expect(violations).toEqual([]);
   });
 
+  it('keeps the safety boundary and the evidence recorder below everything that executes', () => {
+    const violations: string[] = [];
+    for (const directory of ['policy', 'evidence']) {
+      for (const file of sourceFiles(join('src', directory))) {
+        for (const specifier of importsOf(file)) {
+          if (FORBIDDEN_IN_REPLAY.test(specifier) || PLAYWRIGHT_PATTERN.test(specifier)) {
+            violations.push(`${file} imports ${specifier}`);
+          }
+          if (/(^|\/)replay(\/|$)/.test(specifier)) {
+            violations.push(`${file} imports ${specifier}`);
+          }
+        }
+      }
+    }
+
+    expect(violations).toEqual([]);
+  });
+
   it('keeps replay off Playwright, so it drives whatever surface it is handed', () => {
     const violations: string[] = [];
     for (const file of sourceFiles(join('src', 'replay'))) {
@@ -106,6 +128,14 @@ describe('module boundaries', () => {
     }
 
     expect(violations).toEqual([]);
+  });
+
+  it('lets the policy engine decide without touching anything', () => {
+    // A guardrail that reads a file or a network at decision time is a guardrail that can
+    // fail open. Everything it needs is handed to it.
+    const specifiers = sourceFiles(join('src', 'policy')).flatMap(importsOf);
+
+    expect(specifiers.filter((specifier) => specifier.startsWith('node:'))).toEqual([]);
   });
 
   it('lets replay reach the application only through the surface contract', () => {

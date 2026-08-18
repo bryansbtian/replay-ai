@@ -15,6 +15,7 @@ import type { PlaywrightSession } from '../../src/surfaces/playwright/index.js';
 import { openSurface, TEST_TIMEOUTS } from '../surfaces/support/fixture.js';
 
 import { silentLogger } from './support/artifacts.js';
+import { permissivePolicy } from './support/policy.js';
 
 /**
  * The Phase 5 proof: every runtime condition, driven through a real browser.
@@ -76,6 +77,7 @@ async function lookUp(memberId: string): Promise<ReplayResult> {
   const engine = new ReplayEngine({
     surface,
     logger: silentLogger(),
+    policy: permissivePolicy(),
     timeouts: TEST_TIMEOUTS,
   });
   return await engine.run(committedArtifact(), { memberId });

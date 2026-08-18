@@ -16,6 +16,12 @@ export const EXIT_ERROR = 1;
  * be able to tell.
  */
 export const EXIT_BUSINESS_OUTCOME = 2;
+/**
+ * The deployment's policy refused the run. Distinct from a failure, because nothing went
+ * wrong: an operator seeing this changes a rule or approves an action, rather than
+ * investigating a defect.
+ */
+export const EXIT_POLICY_BLOCKED = 3;
 
 export interface CliDeps {
   readonly env: NodeJS.ProcessEnv;
@@ -37,6 +43,10 @@ Commands:
 Replay:
   replay-ai replay --artifact <path> [--input name=value ...]
   replay-ai replay --capability <id>  [--input name=value ...]
+
+Exit codes:
+  0  Success            2  Business Outcome
+  1  Failure            3  Blocked By Policy
 
 Discovery arrives in a later phase.
 `;
@@ -61,6 +71,9 @@ async function replayCommand(argv: readonly string[], deps: CliDeps): Promise<nu
     return EXIT_BUSINESS_OUTCOME;
   }
   deps.stderr(`${result.code}: ${result.message}\n`);
+  if (result.kind === 'policy') {
+    return EXIT_POLICY_BLOCKED;
+  }
   return EXIT_ERROR;
 }
 

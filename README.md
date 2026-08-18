@@ -7,7 +7,7 @@ that artifact is then _replayed_ deterministically, with no LLM in the decision 
 
 ## Current Status
 
-**Phase 5: execution results and error handling.**
+**Phase 6: safety guardrails and run evidence.**
 
 On top of the Phase 1 foundation (typed configuration, structured logging, a small CLI,
 enforced module boundaries, and the full quality gate), the Phase 2 surface layer (the
@@ -23,6 +23,13 @@ run now separates a **business outcome** (a known application answer) from a
 **recoverable condition** (a state the capability recognizes and knows how to clear) from
 a **hard failure** (a state replay will not push past), each with a stable machine-readable
 code and enough context to debug it. No browser exception ever reaches a caller.
+
+Phase 6 adds the two things a run needs before anyone would let it near a real
+application. Every action is evaluated against an **external policy** before it executes,
+so an artifact can describe what it does but never grant itself permission to do it. And
+every run writes **sanitized evidence** to disk: a manifest, an ordered event log, and a
+screenshot of the failure that ended it, with no credential, token, or invocation value
+anywhere in the record.
 
 Replay does not use an LLM, and neither does its recovery. There is no Anthropic
 integration and no discovery loop in this repository yet, so the artifacts that exist were
@@ -629,6 +636,209 @@ npm run replay -- --artifact ./local-member.json --input memberId=99999 | jq '.c
 Exit codes stay as they were: `0` for success, `2` for a business outcome, `1` for a
 failure.
 
+## Safety Guardrails
+
+The automation never decides its own permissions.
+
+```text
+Capability Says:  "This Action Is Risky"
+Policy Says:      "Risky Actions Require Confirmation"
+                = Confirmation Required, And The Action Does Not Happen
+```
+
+There is no path where an artifact saying `"risk": "safe"` grants itself anything. The
+authority is `src/policy/`, configured by whoever operates the deployment, and every
+action passes through it before it reaches `ComputerSurface`.
+
+### Where The Check Happens
+
+```text
+Replay / Future Discovery
+        |
+   Proposed Action ---> Policy Engine ---> blocked: structured result, run stops
+        |                                  allowed: continue
+        v
+  ComputerSurface
+```
+
+One gate, in `StepExecutor`, evaluated once per attempt before the switch that dispatches
+the step. A blocked action results in **zero calls** to the surface, which is asserted
+directly rather than assumed. The engine requires a policy: there is no constructor
+option that turns the guardrail off, because that is the mode that ships by accident.
+
+### Deny By Default
+
+| Situation                 | Result                                     |
+| ------------------------- | ------------------------------------------ |
+| Host not on the allowlist | Blocked                                    |
+| Empty allowlist           | Blocked, not "everything"                  |
+| Scheme not permitted      | Blocked (`javascript:`, `data:`, and rest) |
+| Action type not permitted | Blocked                                    |
+| Risk level not recognized | Blocked                                    |
+| Unparseable URL           | Blocked                                    |
+
+Out of the box the policy reaches **nothing**, over `https` only, asks before anything
+risky, and refuses anything irreversible. A deployment states what it needs.
+
+### Domains And Routes
+
+URLs are parsed and compared, never substring-matched: `https://localhost.attacker.example`
+does not satisfy an allowlist containing `localhost`. Hostnames are lower-cased and the
+trailing dot a resolver ignores is ignored here too. An entry may pin a port
+(`localhost:3000`) or match any port on that host. There are no wildcards.
+
+`localhost`, `127.0.0.1`, and `[::1]` stay **distinct**. They are one machine and three
+names, and treating one entry as permission for the others is how an allowlist grows a
+hole nobody wrote down.
+
+Route prefixes are optional and match on segment boundaries, so `/members` covers
+`/members/42` and not `/membersecret`. A scheme with no host (`file:`, used by the local
+fixture) has no domain allowlist protecting it, so for those the route list is required
+and an empty one refuses everything.
+
+After a navigation, the URL the surface actually landed on is checked again. A permitted
+destination that redirects somewhere else stops the run.
+
+### Risk
+
+Risk comes from the Phase 3 artifact metadata, deterministically. Nothing infers it from
+button text.
+
+| Declared Risk  | Default Behavior      | Result Code                         |
+| -------------- | --------------------- | ----------------------------------- |
+| `safe`         | Allowed               | -                                   |
+| `risky`        | Confirmation required | `POLICY_RISK_CONFIRMATION_REQUIRED` |
+| `irreversible` | Blocked               | `POLICY_RISK_BLOCKED`               |
+
+Confirmation required means the run **stops**. There is no approval queue and no fake
+approval: a person cannot be asked yet, so the action does not happen. Human control
+transfer is Phase 9.
+
+### Policy Denial Codes
+
+`POLICY_URL_INVALID`, `POLICY_SCHEME_NOT_ALLOWED`, `POLICY_DOMAIN_NOT_ALLOWED`,
+`POLICY_ROUTE_NOT_ALLOWED`, `POLICY_ACTION_NOT_ALLOWED`,
+`POLICY_RISK_CONFIRMATION_REQUIRED`, `POLICY_RISK_BLOCKED`.
+
+A denial is a `failure` result with `kind: "policy"`, which is how a caller tells "the
+automation could not do this" from "the automation was not permitted to do this". They
+are different incidents: one is a defect, the other is the system working. The CLI exits
+`3` for a policy block, distinct from `1` for a failure.
+
+### Configuring Local Development
+
+Policy is environment configuration, so changing the allowlist never means editing source.
+`.env.example` ships a local development policy; copy it to `.env`:
+
+```bash
+POLICY_ALLOWED_HOSTS=localhost,127.0.0.1
+POLICY_ALLOWED_SCHEMES=https,http
+POLICY_ALLOWED_ROUTES=
+POLICY_ALLOWED_ACTIONS=navigate,click,fill,extract,wait,checkpoint
+POLICY_RISK_SAFE=allow
+POLICY_RISK_RISKY=requireConfirmation
+POLICY_RISK_IRREVERSIBLE=block
+```
+
+To replay against the local HTML fixture, which is a file rather than a served page:
+
+```bash
+POLICY_ALLOWED_SCHEMES=file POLICY_ALLOWED_ROUTES="$PWD/tests/fixtures" \
+  npm run replay -- --artifact ./local-member.json --input memberId=12345
+```
+
+A production deployment allows `https` only.
+
+## Run Evidence
+
+Every replay writes a sanitized record of what it did.
+
+```text
+evidence/runs/<runId>/
+  metadata.json      capability, policy in force, outcome, warnings
+  events.jsonl       one JSON document per line, in order
+  screenshots/
+    001-replay-wait-timeout.png
+```
+
+The run id is a UUID, generated locally, never derived from an input, and it is the same
+identifier the result reports as `replayId`, so a result and its evidence need no
+correlation by timestamp.
+
+### Events
+
+```json
+{"timestamp":"...","runId":"...","event":"step_started","stepId":"enter-member-id","stepType":"fill"}
+{"timestamp":"...","runId":"...","event":"policy_evaluated","stepId":"enter-member-id","actionType":"fill","outcome":"allow"}
+{"timestamp":"...","runId":"...","event":"step_completed","stepId":"enter-member-id","durationMs":23}
+```
+
+The vocabulary is closed: `run_started`, `policy_evaluated`, `policy_blocked`,
+`step_started`, `step_completed`, `step_failed`, `checkpoint_passed`, `checkpoint_failed`,
+`business_outcome_detected`, `recovery_attempted`, `recovery_exhausted`,
+`screenshot_captured`, `run_completed`.
+
+**Every** policy decision is recorded, not only the refusals, because "was this allowed?"
+is one of the questions evidence exists to answer and a record listing only refusals
+cannot tell a permitted action from an unchecked one.
+
+### What Is Never Written
+
+- invocation values: only input **names** reach evidence, and the fill value that was
+  typed appears nowhere
+- credentials, tokens, cookies, authorization headers, API keys, session identifiers
+- URL query **values** (the names survive so the shape of a request is visible), URL
+  fragments, and credentials embedded in a URL
+- stack traces
+
+Redaction lives in `src/redaction.ts` and is shared with the logger, so a secret cannot be
+scrubbed from the durable record and printed to a terminal.
+
+### Screenshots
+
+One screenshot per run, taken at the failure that ended it, named after the failure code
+(`001-policy-domain-not-allowed.png`). Not one per step: that would be mostly identical
+images and a much larger chance of storing something sensitive.
+
+**A screenshot is a picture of the application, so it may contain whatever the application
+was displaying.** There is no visual redaction here and none is claimed. The fixture uses
+synthetic data, and a production deployment would need stronger screenshot handling, or
+none at all.
+
+Checkpoint observations are recorded only when the checkpoint failed, where the excerpt is
+the diagnosis. A passing checkpoint records that it passed and nothing about what was on
+screen.
+
+### Evidence Failures
+
+A run's result never changes because evidence could not be written. An event or a
+screenshot that fails becomes a warning on the manifest and the CLI prints it. A manifest
+that cannot be written throws, because a run directory that says nothing about the run is
+an observability failure worth hearing about rather than burying.
+
+### Inspecting A Run
+
+```bash
+npm run replay -- --artifact ./local-member.json --input memberId=12345
+```
+
+```text
+Replay Completed
+
+  Run ID:   7fe03cef-34e8-473c-a778-3a8211cf56cc
+  Status:   Success
+  Evidence: evidence/runs/7fe03cef-34e8-473c-a778-3a8211cf56cc
+```
+
+```bash
+cat evidence/runs/<run-id>/metadata.json
+jq -c '{event, stepId, outcome, code}' evidence/runs/<run-id>/events.jsonl
+open evidence/runs/<run-id>/screenshots/
+```
+
+The summary goes to stderr and the machine-readable result to stdout, so the result still
+pipes into `jq` cleanly.
+
 ## Technology Stack
 
 | Concern         | Choice                                                  |
@@ -770,14 +980,19 @@ against a scripted surface:
 npm run test -- tests/replay
 ```
 
-| Suite                                 | Covers                                                      |
-| ------------------------------------- | ----------------------------------------------------------- |
-| `tests/replay/inputs.test.ts`         | Input validation and parameter resolution                   |
-| `tests/replay/engine.test.ts`         | Ordering, checkpoints, success condition, retries, budgets  |
-| `tests/replay/outputs.test.ts`        | Output typing, conversion refusals, and the output contract |
-| `tests/replay/classification.test.ts` | Every surface error to a code, and what never leaks out     |
-| `tests/replay/outcomes.test.ts`       | Business outcomes, declared failures, undeclared states     |
-| `tests/replay/recovery.test.ts`       | Recognition, bounded recovery, exhaustion, and refusals     |
+| Suite                                      | Covers                                                       |
+| ------------------------------------------ | ------------------------------------------------------------ |
+| `tests/policy/policy.test.ts`              | Allowlists, schemes, routes, risk, and bypass attempts       |
+| `tests/evidence/redaction.test.ts`         | Redaction rules, and that the logger applies the same ones   |
+| `tests/evidence/recorder.test.ts`          | Manifests, JSONL, screenshots, path safety, write failures   |
+| `tests/replay/policyIntegration.test.ts`   | Policy runs before the surface, and blocked means zero calls |
+| `tests/replay/evidenceIntegration.test.ts` | A real run's evidence for each outcome                       |
+| `tests/replay/inputs.test.ts`              | Input validation and parameter resolution                    |
+| `tests/replay/engine.test.ts`              | Ordering, checkpoints, success condition, retries, budgets   |
+| `tests/replay/outputs.test.ts`             | Output typing, conversion refusals, and the output contract  |
+| `tests/replay/classification.test.ts`      | Every surface error to a code, and what never leaks out      |
+| `tests/replay/outcomes.test.ts`            | Business outcomes, declared failures, undeclared states      |
+| `tests/replay/recovery.test.ts`            | Recognition, bounded recovery, exhaustion, and refusals      |
 
 End-to-end tests live in `tests/e2e/` and run under Playwright. There are no specs: the
 browser suites run under Vitest so the adapter and the engine are measured by coverage, so
@@ -823,17 +1038,24 @@ src/
     replay.ts           The replay command, and the one place a surface is chosen
   config/               The only reader of process.env, Zod-validated
   discovery/            LLM-driven exploration loop (Phase 7)
-  evidence/             Structured run evidence capture (Phase 6)
+  evidence/             Sanitized run records: manifest, events, screenshots
+    FileEvidenceRecorder.ts  One directory per run, written atomically
+    types.ts            The closed event vocabulary and the recorder contract
   execution/            Action vocabulary and executor, the shared waist (Phase 7)
-  handoff/              Human handoff (Phase 6)
+  handoff/              Human handoff (Phase 9)
   llm/                  Provider-agnostic model boundary
     anthropic/          Anthropic implementation (Phase 7)
   logging/              Structured JSON logger with redaction
-  policy/               Safety guardrails (Phase 6)
+  policy/               The safety boundary, evaluated before every action
+    StaticPolicyEngine.ts    Pure evaluation of a context against configuration
+    config.ts           What a deployment permits, validated and safe by default
+    url.ts              Parsed-URL allowlisting, never substring matching
   replay/               Deterministic artifact execution, never imports llm/
     ReplayEngine.ts     Validate, execute in order, verify, collect, return a result
     StepExecutor.ts     One step against the surface, with bounded attempts
     classification.ts   The one place a surface error becomes a stable code
+    policyGate.ts       A step described to policy, and a denial described to the run
+    RunJournal.ts       One call site per event, written to the log and to evidence
     RecoveryPlanner.ts  Recognizes a declared condition and clears it, bounded
     CheckpointEvaluator.ts  Conditions, keeping expected next to observed
     InputValidator.ts   Invocation inputs against the declared inputs
@@ -854,8 +1076,11 @@ src/
       observation.ts        The bounded page snapshot
       session.ts            Browser lifecycle, owned outside the surface
   errors.ts             Shared error base with stable error codes
+  redaction.ts          The one set of redaction rules, shared by logger and evidence
 tests/                  Vitest suites
   artifacts/            Schema, serialization, and artifact store suites
+  evidence/             Redaction rules and the run recorder
+  policy/               The safety boundary and its bypass regression tests
   fixtures/             Local HTML the surface and replay suites drive
   replay/               Input, engine, output, and real-browser replay suites
   surfaces/             Surface, resolver, target, and contract suites

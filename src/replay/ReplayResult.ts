@@ -96,15 +96,17 @@ export type EngineFailureCode = (typeof ENGINE_FAILURE_CODES)[number];
 export type ReplayFailureCode = EngineFailureCode | (string & {});
 
 /**
- * How a failure relates to the recovery machinery, as a closed set a caller can branch
- * on without knowing any individual code.
+ * What class of failure this is, as a closed set a caller can branch on without knowing
+ * any individual code.
  *
  * `terminal`: replay does not recognize this state, so it stopped rather than guessing.
  * `recoveryExhausted`: replay recognized the state and its bounded recovery ran out. The
  * distinction matters operationally, because the second means the application really was
  * stuck in a state the capability knows about, not that the capability is wrong.
+ * `policy`: nothing went wrong. The deployment does not permit this action, and the
+ * system worked. Paging someone about it would be paging them about a rule they wrote.
  */
-export type FailureKind = 'terminal' | 'recoveryExhausted';
+export type FailureKind = 'terminal' | 'recoveryExhausted' | 'policy';
 
 /** One step that ran to completion, in execution order. */
 export interface ReplayStepRecord {

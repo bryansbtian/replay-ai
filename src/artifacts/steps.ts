@@ -292,6 +292,28 @@ export type CapabilityStep = z.infer<typeof capabilityStepSchema>;
 export type CapabilityStepType = CapabilityStep['type'];
 
 /**
+ * The step vocabulary as a value, so that a policy can allowlist action types without
+ * restating them. The assertion below is what keeps the list honest: adding a step to
+ * the union without adding it here stops compiling, so there is one source of truth
+ * rather than two lists that drift.
+ */
+export const CAPABILITY_STEP_TYPES = [
+  'navigate',
+  'click',
+  'fill',
+  'extract',
+  'wait',
+  'checkpoint',
+] as const satisfies readonly CapabilityStepType[];
+
+type UncoveredStepType = Exclude<CapabilityStepType, (typeof CAPABILITY_STEP_TYPES)[number]>;
+
+/** Reads as "no step type is missing from the list above". */
+type AssertEveryStepTypeListed<T extends never> = T;
+
+export type _StepTypesAreComplete = AssertEveryStepTypeListed<UncoveredStepType>;
+
+/**
  * A parsed target is the Phase 2 surface target, and the constraint below is the proof:
  * if the schema and the surface model ever drifted apart this would stop compiling. It
  * is what lets a later replay hand a stored target straight to a `ComputerSurface`

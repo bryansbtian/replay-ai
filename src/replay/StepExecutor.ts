@@ -1,15 +1,17 @@
-import type { CapabilityStep } from '../artifacts/index.js';
-import type { Logger } from '../logging/logger.js';
+import type { CapabilityArtifact, CapabilityStep } from '../artifacts/index.js';
+import type { PolicyDecision, PolicyDenialCode, PolicyEngine } from '../policy/index.js';
 import type { ComputerSurface } from '../surfaces/index.js';
 
-import type { CheckpointEvaluator, CheckpointOutcome } from './CheckpointEvaluator.js';
+import type { CheckpointEvaluator } from './CheckpointEvaluator.js';
 import { classifyThrown } from './classification.js';
 import { withDeadline } from './deadlines.js';
 import type { ResolvedInputs } from './InputValidator.js';
 import type { OutputCollector } from './OutputCollector.js';
 import { resolveParameter } from './ParameterResolver.js';
+import { isDenied, policyContextFor, toPolicyFailure } from './policyGate.js';
 import { isRetrySafe, riskOf } from './RecoveryPlanner.js';
 import type { EngineFailureCode } from './ReplayResult.js';
+import type { RunJournal } from './RunJournal.js';
 
 /**
  * Applies one stored step to the surface.
@@ -21,10 +23,14 @@ import type { EngineFailureCode } from './ReplayResult.js';
  *
  * Failures are returned rather than thrown, because in a replay a failed step is an
  * outcome the run has to describe, not an exception the caller has to guess at.
+ *
+ * It is also the single gate through which every action reaches the surface. Policy is
+ * evaluated once here, before the switch that dispatches the step, so there is one place
+ * where the question is asked and no step type can be added that quietly skips it.
  */
 
 export interface StepFailure {
-  readonly code: EngineFailureCode;
+  readonly code: EngineFailureCode | PolicyDenialCode;
   readonly message: string;
   readonly expected?: string;
   readonly observed?: string;
@@ -49,10 +55,15 @@ export type StepOutcome =
 
 export interface StepExecutorOptions {
   readonly surface: ComputerSurface;
-  readonly logger: Logger;
+  readonly journal: RunJournal;
   readonly checkpoints: CheckpointEvaluator;
   readonly inputs: ResolvedInputs;
   readonly outputs: OutputCollector;
+  readonly policy: PolicyEngine;
+  /** Identity the policy context is built from. The artifact is never modified. */
+  readonly artifact: CapabilityArtifact;
+  /** Called with every decision, so the run can record what was asked and answered. */
+  readonly onPolicyDecision: (step: CapabilityStep, decision: PolicyDecision) => void;
 }
 
 /**
@@ -65,7 +76,7 @@ export interface StepExecutorOptions {
  * A suppressed retry is logged rather than hidden, because a declaration that does
  * nothing is worth knowing about.
  */
-function maxAttempts(step: CapabilityStep, logger: Logger): number {
+function maxAttempts(step: CapabilityStep, journal: RunJournal): number {
   const declared = step.execution?.retry?.maxAttempts;
   if (declared === undefined || declared <= 1) {
     return 1;
@@ -74,7 +85,7 @@ function maxAttempts(step: CapabilityStep, logger: Logger): number {
     return declared;
   }
 
-  logger.warn('Retry Not Applied', {
+  journal.note('Retry Not Applied', {
     stepId: step.id,
     stepType: step.type,
     risk: riskOf(step),
@@ -114,17 +125,23 @@ function toFailure(step: CapabilityStep, budgetMs: number, error: unknown): Step
 
 export class StepExecutor {
   private readonly surface: ComputerSurface;
-  private readonly logger: Logger;
+  private readonly journal: RunJournal;
   private readonly checkpoints: CheckpointEvaluator;
   private readonly inputs: ResolvedInputs;
   private readonly outputs: OutputCollector;
+  private readonly policy: PolicyEngine;
+  private readonly artifact: CapabilityArtifact;
+  private readonly onPolicyDecision: StepExecutorOptions['onPolicyDecision'];
 
   constructor(options: StepExecutorOptions) {
     this.surface = options.surface;
-    this.logger = options.logger;
+    this.journal = options.journal;
     this.checkpoints = options.checkpoints;
     this.inputs = options.inputs;
     this.outputs = options.outputs;
+    this.policy = options.policy;
+    this.artifact = options.artifact;
+    this.onPolicyDecision = options.onPolicyDecision;
   }
 
   /**
@@ -136,7 +153,7 @@ export class StepExecutor {
    * would be a decision made without the artifact's authority.
    */
   async execute(step: CapabilityStep, budgetMs: number): Promise<StepOutcome> {
-    const limit = maxAttempts(step, this.logger);
+    const limit = maxAttempts(step, this.journal);
     let attempts = 0;
     let elapsed = 0;
     let failure: StepFailure | undefined;
@@ -151,7 +168,7 @@ export class StepExecutor {
         return { ok: true, attempts, durationMs: elapsed };
       }
       if (attempts < limit) {
-        this.logger.warn('Step Retrying', {
+        this.journal.note('Step Retrying', {
           stepId: step.id,
           stepType: step.type,
           attempt: attempts,
@@ -171,8 +188,21 @@ export class StepExecutor {
     };
   }
 
-  /** One attempt. Returns the failure, or `undefined` when the step succeeded. */
+  /**
+   * One attempt, gated by policy.
+   *
+   * The check is here rather than inside each step implementation, so a denial returns
+   * before `perform` is reached and the surface is never touched. Every retry is
+   * evaluated again: policy is cheap, and an action being attempted twice is exactly the
+   * situation where a guardrail should be asked twice rather than remembered.
+   */
   private async attempt(step: CapabilityStep, budgetMs: number): Promise<StepFailure | undefined> {
+    const decision = this.policy.evaluate(policyContextFor(this.artifact, step));
+    this.onPolicyDecision(step, decision);
+    if (isDenied(decision)) {
+      return toPolicyFailure(step, decision);
+    }
+
     try {
       return await this.perform(step, budgetMs);
     } catch (error) {
@@ -183,11 +213,7 @@ export class StepExecutor {
   private async perform(step: CapabilityStep, budgetMs: number): Promise<StepFailure | undefined> {
     switch (step.type) {
       case 'navigate':
-        await withDeadline(
-          () => this.surface.navigate(step.url, { timeoutMs: budgetMs }),
-          budgetMs,
-        );
-        return undefined;
+        return await this.navigate(step, budgetMs);
 
       case 'click':
         await withDeadline(
@@ -208,6 +234,37 @@ export class StepExecutor {
       case 'checkpoint':
         return await this.condition(step, budgetMs, 'REPLAY_CHECKPOINT_FAILED');
     }
+  }
+
+  /**
+   * Moves the surface, then checks where it actually landed.
+   *
+   * A destination that passes policy can still answer with a redirect to one that does
+   * not, and a replay that carried on would be operating somewhere it was never
+   * permitted to be. One re-check after the navigation settles is enough: it is bounded,
+   * it costs one comparison, and it catches the case that matters.
+   */
+  private async navigate(
+    step: Extract<CapabilityStep, { type: 'navigate' }>,
+    budgetMs: number,
+  ): Promise<StepFailure | undefined> {
+    const result = await withDeadline(
+      () => this.surface.navigate(step.url, { timeoutMs: budgetMs }),
+      budgetMs,
+    );
+
+    if (result.url === step.url) {
+      return undefined;
+    }
+    const landed = this.policy.evaluate({
+      ...policyContextFor(this.artifact, step),
+      url: result.url,
+    });
+    this.onPolicyDecision(step, landed);
+    if (isDenied(landed)) {
+      return toPolicyFailure(step, landed);
+    }
+    return undefined;
   }
 
   private async fill(
@@ -262,7 +319,7 @@ export class StepExecutor {
     code: EngineFailureCode,
   ): Promise<StepFailure | undefined> {
     const outcome = await this.checkpoints.evaluate(step.condition, budgetMs);
-    this.logCheckpoint(step.id, outcome);
+    await this.journal.checkpoint(step.id, outcome);
 
     if (outcome.passed) {
       return undefined;
@@ -274,20 +331,5 @@ export class StepExecutor {
       observed: outcome.observed,
       conditionFailed: true,
     };
-  }
-
-  private logCheckpoint(stepId: string, outcome: CheckpointOutcome): void {
-    const fields = {
-      stepId,
-      checkpointType: outcome.type,
-      expected: outcome.expected,
-      observed: outcome.observed,
-      durationMs: outcome.durationMs,
-    };
-    if (outcome.passed) {
-      this.logger.info('Checkpoint Passed', fields);
-      return;
-    }
-    this.logger.warn('Checkpoint Failed', fields);
   }
 }

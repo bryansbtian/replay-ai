@@ -1,4 +1,5 @@
 import { ReplayAiError } from '../errors.js';
+import type { PolicyDenialCode } from '../policy/index.js';
 import {
   ActionFailedError,
   AmbiguousTargetError,
@@ -59,8 +60,13 @@ const RECOVERY_ELIGIBLE_CODES: ReadonlySet<EngineFailureCode> = new Set([
   'REPLAY_ACTION_FAILED',
 ]);
 
-export function isRecoveryEligible(code: EngineFailureCode): boolean {
-  return RECOVERY_ELIGIBLE_CODES.has(code);
+/**
+ * Accepts a policy denial as well as an engine code, and answers `false` for every one
+ * of them. A guardrail that could be cleared by dismissing a dialog and trying again
+ * would not be a guardrail.
+ */
+export function isRecoveryEligible(code: EngineFailureCode | PolicyDenialCode): boolean {
+  return RECOVERY_ELIGIBLE_CODES.has(code as EngineFailureCode);
 }
 
 /** The first line only: a browser call log belongs in a debugger, not in a result. */

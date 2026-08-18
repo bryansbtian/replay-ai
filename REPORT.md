@@ -142,6 +142,38 @@ model provider at all, in source as well as in imports. Recovery is the one plac
 system that reacts to a failure by doing something, so it is where an AI fallback would
 first appear, and it is worth an explicit guard rather than a convention.
 
+## Where The Safety Boundary Sits
+
+Policy and evidence sit _below_ everything that executes anything, not beside replay:
+
+```text
+        Replay              Discovery (Phase 7)
+           |                     |
+           +----------+----------+
+                      |
+                Policy Engine          decides, touches nothing
+                      |
+               ComputerSurface
+                      |
+              Evidence Recorder        records, decides nothing
+```
+
+The engine is handed a `PolicyContext` describing a proposed action and returns a
+decision. It has no idea who proposed it, which is the whole point: when the discovery
+loop arrives it builds the same context for a model-proposed action and gets the same
+answer from the same code. A second, weaker boundary for the LLM path is the failure mode
+this shape exists to prevent, and an ESLint rule plus an architecture test keep both
+packages from importing replay, discovery, or a model SDK.
+
+Two consequences follow from the engine being pure and synchronous. It cannot fail open,
+because there is nothing in it to fail: no file read, no network call, no clock. And it is
+testable as a table of questions and answers, which matters for the one component whose
+correctness everything else assumes.
+
+Enforcement lives in `StepExecutor`, evaluated once per attempt before the switch that
+dispatches the step. One gate rather than a check inside each step implementation, so a
+seventh step type cannot be added that quietly skips it.
+
 ## Where The Artifact Sits
 
 The capability artifact is the waist of the pipeline: discovery writes it, replay reads
@@ -708,9 +740,22 @@ going to do; the question is "what is on screen now", not "wait for this to appe
 Charging the full budget made a run that declares several states spend seconds deciding
 what to call the failure it already had.
 
+## Policy Denials In The Taxonomy
+
+Phase 6 added one class of outcome to the model rather than a new status. A denial is a
+`failure` carrying `kind: "policy"` and a `POLICY_`-prefixed code, which keeps the three
+terminal statuses a caller switches over intact while making "the rule stopped this"
+machine-readable.
+
+It is deliberately excluded from both interpretive paths. Declared-state detection does not
+run, because a guardrail is not an application state to ask the page about; recovery does
+not run, because a boundary that a dismissed dialog could clear would not be a boundary.
+Policy is also re-evaluated on every retry rather than remembered, since an action being
+attempted twice is exactly the situation where a guardrail should be asked twice.
+
 ## What Is Deferred
 
-To Phase 6:
+To Phase 9:
 
 - **Escalation and handoff.** Replay classifies and stops. Nothing yet decides that a
   session should be handed to a person, which is what `SESSION_EXPIRED` is waiting for.
@@ -771,8 +816,137 @@ This section will eventually document:
 
 # Safety
 
-Placeholder for the guardrails work. What is implemented is the credential handling
-part of safety, which is the part that a public repository has to get right immediately:
+The two halves of this section are the guardrail that decides what may happen and the
+record of what did. Both landed in Phase 6.
+
+## External Policy Authority
+
+The automation never decides its own permissions. A capability artifact is written by
+whoever recorded a workflow; the policy is written by whoever operates it, and only the
+second is authoritative:
+
+```text
+Capability Says:  "This Action Is Risky"
+Policy Says:      "Risky Actions Require Confirmation"
+                = Confirmation Required, And Nothing Happens
+```
+
+There is deliberately no path in the other direction. An artifact declaring `safe` gains
+nothing it would not have had by saying nothing, and a deployment that refuses `safe` work
+refuses it whatever any artifact claims. Both are asserted directly, because "the artifact
+cannot grant itself permission" is the kind of property that is true until somebody adds a
+convenient shortcut.
+
+`ReplayEngine` requires a policy. There is no constructor option that turns the guardrail
+off, because a component with an optional guardrail has a mode with none, and that is the
+mode that ships by accident. Tests that are about something else pass an explicitly
+permissive policy rather than no policy: permissiveness is a configuration, not an absence.
+
+## Deny By Default
+
+Out of the box the policy reaches nothing, over `https` only, asks before anything risky,
+and refuses anything irreversible. An unlisted host, an unrecognized action type, an
+unrecognized risk level, an unsupported scheme, and a URL that will not parse are all
+refusals rather than gaps. An empty allowlist means nothing is reachable, not everything.
+
+The cost is a first-run experience where `npm run replay` refuses until a policy is
+written. That is the correct cost: an allowlist nobody filled in is not permission to go
+everywhere, and `.env.example` ships the local development policy so writing one takes a
+copy.
+
+## Domains, Schemes, And Routes
+
+Every check works on a parsed `URL`. Nothing compares substrings, because
+`url.includes('localhost')` is satisfied by `https://localhost.attacker.example`, and an
+allowlist a subdomain defeats is not an allowlist. Hostnames are lower-cased and the
+trailing dot a resolver ignores is ignored here too. There are no wildcards: `*.example.com`
+reads as a convenience and is how an allowlist ends up covering a subdomain somebody else
+controls.
+
+`localhost`, `127.0.0.1`, and `[::1]` stay distinct. They are one machine and three names,
+and quietly treating one entry as permission for the others is a hole nobody wrote down.
+A deployment that means the loopback interface lists the forms it uses.
+
+Route prefixes match on segment boundaries, so `/members` covers `/members/42` and not
+`/membersecret`. They are optional on a host that is already allowlisted, which is a
+deliberate exception to deny-by-default: the host is the control that matters, and forcing
+every deployment to enumerate routes pushes people towards writing `/` and stopping
+thinking. A scheme with no host has no such control, so `file:` requires the route list
+and an empty one refuses everything.
+
+Redirects are re-checked once. A permitted destination that answers with a redirect
+somewhere else stops the run, which is bounded and testable, rather than a redirect
+monitor with its own failure modes.
+
+## Risk Classification
+
+Risk comes from the Phase 3 artifact metadata, and nothing infers it from button text.
+`safe` runs, `risky` requires confirmation, `irreversible` is refused. Every one of those
+mappings is configuration, so a deployment may refuse `risky` outright or, knowing what it
+is doing, allow it.
+
+Confirmation required means the run stops with `POLICY_RISK_CONFIRMATION_REQUIRED` and the
+action does not happen. There is no approval queue and no simulated approval, because a
+person cannot be asked yet and pretending otherwise would be the most dangerous kind of
+placeholder. Phase 9 turns this into a real control transfer.
+
+A policy denial is a `failure` with `kind: "policy"`, which is how a caller distinguishes
+"the automation could not do this" from "the automation was not permitted to do this".
+Those are different incidents: one is a defect, the other is the system working. A denial
+is also never sent down the paths that ask the page what it meant or try to clear an
+obstacle, because a guardrail a dialog can clear is not a guardrail.
+
+## What Is Written Down
+
+Evidence is a durable, sanitized record of one run, deliberately not a copy of the
+developer log. A log is a stream someone watches; evidence answers what ran, what it was
+allowed to do, what happened, and where it stopped, for someone who was not there.
+
+Redaction rules live in `src/redaction.ts` and are shared with the logger. That sharing is
+the point rather than tidiness: a secret scrubbed from a durable record and printed to a
+terminal that gets pasted into a ticket has not been scrubbed.
+
+Never persisted: invocation values (only input names reach evidence, and the value a
+`fill` typed appears nowhere), credentials, tokens, cookies, authorization headers, API
+keys, session identifiers, and stack traces.
+
+URL query values are removed wholesale rather than matched against a list of suspicious
+parameter names. A denylist catches `?token=` and misses `?acct=`, and in the applications
+this project targets the second is the one that matters. Parameter names survive so the
+shape of a request stays visible. Fragments are dropped entirely, and credentials embedded
+in a URL with them.
+
+Every policy decision is recorded, not only the refusals, because a record listing only
+refusals cannot tell a permitted action from an unchecked one.
+
+## Screenshot Limitations
+
+One screenshot per run, at the failure that ended it, named from the failure code so a
+directory listing cannot leak what a run was looking up.
+
+**A screenshot is a picture of the application and may contain whatever it was
+displaying.** There is no visual redaction and none is claimed. The fixture uses synthetic
+data; a production deployment would need stronger screenshot handling, a policy of not
+capturing at all on certain screens, or both. Fabricating an image-redaction capability
+would be worse than the honest limitation.
+
+The same reasoning shaped a smaller decision: a checkpoint's observed text is recorded only
+when the checkpoint failed. On a pass it adds nothing an operator needs and everything the
+page happened to be displaying.
+
+## Evidence Failure Policy
+
+A run's result never changes because evidence could not be written. An event or a
+screenshot that fails becomes a warning on the manifest, so the loss is visible without
+being fatal. A manifest that cannot be written throws, because a run directory that exists
+and says nothing about the run is an observability failure worth hearing about rather than
+burying. The manifest is written through a temporary file and a rename, so a reader never
+finds half a JSON document; that is one extra call, not a transaction system.
+
+## What Came Before
+
+The credential handling from earlier phases, which is the part a public repository has to
+get right immediately:
 
 - `src/config/` is the only reader of `process.env`, so secrets travel one code path
 - `toSafeConfig` projects config down to loggable fields and reports the API key as a
@@ -918,5 +1092,24 @@ Error-handling cuts:
 - **No LLM recovery fallback.** Named a stretch goal by the assignment, and left out: an
   AI decision inside replay is the one thing the whole architecture is arranged to
   prevent.
+
+Safety and evidence cuts:
+
+- **No policy DSL.** Lists of hosts, schemes, routes, and actions, plus three risk
+  dispositions. A rule language would need a parser, a test suite of its own, and a
+  reviewer who understands it, to express rules nobody has yet needed.
+- **No wildcard hosts.** `*.example.com` reads as a convenience and is how an allowlist
+  ends up covering a subdomain somebody else controls.
+- **No approval queue.** `confirmationRequired` stops the run. Simulating an approval
+  nobody gave would be the most dangerous placeholder in the system.
+- **No visual redaction.** Screenshots are treated as sensitive and documented as such
+  rather than passed through an image filter this project has not built.
+- **No remote or database evidence.** A directory per run, because a run record is
+  something a person reads, diffs, and attaches to a ticket.
+- **No retention policy.** Evidence is never deleted automatically. Retention is an
+  operational decision, and a phase that quietly deleted records would be the wrong place
+  to make it.
+- **No redirect monitor.** One re-check after navigation, which is bounded and testable,
+  rather than a watcher with its own failure modes.
 
 Cuts made in later phases will be recorded here as they happen.

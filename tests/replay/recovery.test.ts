@@ -15,6 +15,7 @@ import {
   type JsonObject,
 } from './support/artifacts.js';
 import { FakeSurface } from './support/fakeSurface.js';
+import { permissivePolicy } from './support/policy.js';
 
 /**
  * Deterministic recovery from a declared runtime condition.
@@ -31,6 +32,7 @@ function engineWith(surface: FakeSurface): ReplayEngine {
   return new ReplayEngine({
     surface,
     logger: silentLogger(),
+    policy: permissivePolicy(),
     timeouts: TEST_TIMEOUTS,
     replayId: 'replay-under-test',
   });
@@ -121,6 +123,7 @@ describe('a recognized condition that clears', () => {
     await new ReplayEngine({
       surface: consoleWithDialog(1),
       logger,
+      policy: permissivePolicy(),
       timeouts: TEST_TIMEOUTS,
     }).run(stated(), { memberId: '77777' });
 
@@ -173,6 +176,7 @@ describe('a recognized condition that will not clear', () => {
     await new ReplayEngine({
       surface: consoleWithDialog(9),
       logger,
+      policy: permissivePolicy(),
       timeouts: TEST_TIMEOUTS,
     }).run(stated(), { memberId: '77777' });
 

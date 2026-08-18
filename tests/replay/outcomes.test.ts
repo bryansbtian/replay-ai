@@ -13,6 +13,7 @@ import {
   type JsonObject,
 } from './support/artifacts.js';
 import { FakeSurface, type FakeBehavior } from './support/fakeSurface.js';
+import { permissivePolicy } from './support/policy.js';
 
 /**
  * The Phase 5 question: when a run does not succeed normally, what exactly happened?
@@ -29,6 +30,7 @@ function engineWith(surface: FakeSurface, options: { stepTimeoutMs?: number } = 
   return new ReplayEngine({
     surface,
     logger: silentLogger(),
+    policy: permissivePolicy(),
     timeouts: TEST_TIMEOUTS,
     replayId: 'replay-under-test',
     ...options,
@@ -181,6 +183,7 @@ describe('a declared state the artifact marks as a failure', () => {
     await new ReplayEngine({
       surface: surfaceShowing({ texts: [PERMISSION_TEXT] }),
       logger,
+      policy: permissivePolicy(),
       timeouts: TEST_TIMEOUTS,
     }).run(stated(), { memberId: '99999' });
 
