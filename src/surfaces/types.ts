@@ -137,6 +137,18 @@ export interface StrategyAttempt {
 export type SurfaceActionName = 'navigate' | 'click' | 'fill';
 
 /**
+ * Per-call override of the surface's own waiting budget.
+ *
+ * Present because a stored workflow can declare that one step legitimately takes longer
+ * than the rest, and the caller has no other way to say so: without it the surface
+ * budget would be the only budget, and a slow screen would need the whole surface
+ * slowed down for it.
+ */
+export interface SurfaceCallOptions {
+  readonly timeoutMs?: number;
+}
+
+/**
  * Outcome of an action that changed the surface.
  *
  * There is no `success` flag: a failed action throws a typed surface error carrying its
@@ -154,7 +166,7 @@ export interface ActionResult {
 /** What to read off a resolved target. */
 export type ExtractionKind = 'text' | 'value' | 'attribute';
 
-export interface ExtractionOptions {
+export interface ExtractionOptions extends SurfaceCallOptions {
   readonly kind?: ExtractionKind;
   /** Required when `kind` is `attribute`. */
   readonly attribute?: string;
@@ -199,4 +211,63 @@ export interface ScreenshotResult {
   readonly capturedAt: string;
   readonly url: string;
   readonly durationMs: number;
+}
+
+/** The target is on screen. Satisfied by one or more matches, see `waitFor`. */
+export interface TargetVisibleCondition {
+  readonly type: 'targetVisible';
+  readonly target: Target;
+}
+
+/** The target is on screen and its content includes `text`. */
+export interface TargetContainsTextCondition {
+  readonly type: 'targetContainsText';
+  readonly target: Target;
+  readonly text: string;
+}
+
+/** The text is on screen somewhere. */
+export interface TextVisibleCondition {
+  readonly type: 'textVisible';
+  readonly text: string;
+}
+
+/** The surface location matches the regular expression. */
+export interface UrlMatchesCondition {
+  readonly type: 'urlMatches';
+  /** A regular expression source string, matched against the whole location. */
+  readonly pattern: string;
+}
+
+/**
+ * A state a caller can wait for and assert on.
+ *
+ * This is the surface half of a checkpoint. It lives here rather than above the
+ * contract because answering it is the surface's job: only an implementation knows how
+ * to wait for a state natively, and a caller that had to poll would be reintroducing
+ * the fixed delays the whole surface avoids.
+ */
+export type SurfaceCondition =
+  TargetVisibleCondition | TargetContainsTextCondition | TextVisibleCondition | UrlMatchesCondition;
+
+export type SurfaceConditionType = SurfaceCondition['type'];
+
+/**
+ * What a state check saw.
+ *
+ * Returned rather than thrown, and richer than a boolean, because an unsatisfied
+ * condition is an answer a caller reports ("expected X, the surface showed Y") rather
+ * than a broken surface.
+ */
+export interface ConditionObservation {
+  readonly condition: SurfaceConditionType;
+  readonly satisfied: boolean;
+  /**
+   * Short rendering of what the surface showed, for a failure message. Bounded, and
+   * never a value the caller supplied.
+   */
+  readonly observed: string;
+  readonly durationMs: number;
+  /** Which strategy answered. Absent for conditions that name no target. */
+  readonly resolvedBy?: LocatorStrategyKind;
 }

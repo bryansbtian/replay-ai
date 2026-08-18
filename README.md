@@ -7,19 +7,22 @@ that artifact is then _replayed_ deterministically, with no LLM in the decision 
 
 ## Current Status
 
-**Phase 3: the capability artifact schema.**
+**Phase 4: the deterministic replay engine.**
 
 On top of the Phase 1 foundation (typed configuration, structured logging, a small CLI,
-enforced module boundaries, and the full quality gate) and the Phase 2 surface layer (the
+enforced module boundaries, and the full quality gate), the Phase 2 surface layer (the
 `ComputerSurface` contract, a locator-strategy target model, and a Playwright-backed
-implementation) the repository now contains the middle contract of the system: a typed,
-versioned, validated capability artifact, its canonical JSON serialization, and a local
-file store for it.
+implementation), and the Phase 3 capability artifact (a typed, versioned, validated
+document with canonical serialization and a file store), the repository can now **execute
+a saved capability**: validate an invocation, run the stored steps in order, verify each
+checkpoint and the final success condition, collect the declared outputs, and return a
+structured result.
 
-There is still no Anthropic integration, no discovery loop, no replay engine, no policy
-engine, and no human handoff. Phase 3 defines and validates what a workflow _is_; it does
-not run one. Every directory that is still empty says so in its own README, along with
-the dependencies it is allowed to have.
+Replay does not use an LLM. There is no Anthropic integration and no discovery loop in
+this repository yet, so the artifacts that exist were authored by hand rather than
+recorded. There is also no policy engine, no evidence capture, and no human handoff.
+Every directory that is still empty says so in its own README, along with the
+dependencies it is allowed to have.
 
 ## Architecture
 
@@ -49,10 +52,11 @@ Surface Policy Evidence
 
 A few rules matter more than the rest:
 
-1. **`replay/` must never import from `llm/`.** Replay executes a saved capability
-   without a model deciding anything, which is what makes it deterministic and cheap.
-   The rule is enforced twice: an ESLint `no-restricted-imports` rule scoped to
-   `src/replay/**`, and a test in `tests/architecture.test.ts` that scans imports so the
+1. **`replay/` must never import from `llm/` or `discovery/`.** Replay executes a saved
+   capability without a model deciding anything, which is what makes it deterministic and
+   cheap. It may not import Playwright either: it drives whatever `ComputerSurface` it is
+   handed. The rules are enforced twice: ESLint `no-restricted-imports` scoped to
+   `src/replay/**`, and tests in `tests/architecture.test.ts` that scan imports so the
    build fails even if the lint config drifts.
 2. **`config/` is the only module that reads `process.env`.** Everything else receives a
    typed, readonly `AppConfig`, so secrets travel on one code path and tests configure
@@ -306,6 +310,149 @@ exists is a file that parses. Output is indented, ends with a newline, and has a
 order that does not depend on how the object was built, which keeps a pull request diff
 about the workflow rather than about object construction.
 
+## Deterministic Replay
+
+Replay is the production path. It takes a saved capability artifact, an invocation, and a
+`ComputerSurface`, and runs the workflow with **no LLM in the decision loop**. There is no
+import path from `src/replay/` to `src/llm/`, to `src/discovery/`, or to a model SDK, and
+two tests plus an ESLint rule keep it that way. The same artifact and the same inputs
+issue the same operations in the same order.
+
+```text
+Capability Artifact + Invocation Inputs + ComputerSurface
+                          |
+                  Validate Inputs
+                          |
+                 Resolve Parameters
+                          |
+              Execute Steps In Stored Order
+                          |
+                 Evaluate Checkpoints
+                          |
+                    Collect Outputs
+                          |
+            Verify Final Success Condition
+                          |
+                  Structured Result
+```
+
+### Running One
+
+```ts
+import { ReplayEngine } from './src/replay/index.js';
+import { PlaywrightSurface, launchPlaywrightSession } from './src/surfaces/playwright/index.js';
+
+const session = await launchPlaywrightSession();
+const surface = new PlaywrightSurface({ page: session.page, logger });
+const engine = new ReplayEngine({ surface, logger, timeouts: config.surfaceTimeouts });
+
+const result = await engine.run(artifact, { memberId: '12345' });
+```
+
+`run` always returns a result. A bad invocation, a step that failed, a condition that did
+not hold, and an outcome the business already knows about are all things the run has to
+describe, so none of them is thrown at the caller. The public API mentions no browser
+type: swapping in another surface changes the two lines that build one.
+
+From the command line:
+
+```bash
+npm run replay -- \
+  --artifact capabilities/examples/lookup-demo-member.json \
+  --input memberId=12345
+```
+
+`--capability <id>` loads from `CAPABILITIES_DIR` instead of a path, `--input name=value`
+repeats, and `--headed` shows the browser. Exit codes are `0` for success, `2` for a
+declared business outcome, and `1` for a failure, so a script can tell "no member matches
+that reference" apart from "the automation broke".
+
+The committed example points at a demo host that does not exist. To watch a real replay,
+point its `entryPoint` and its navigate step at `tests/fixtures/member-lookup.html`, which
+is exactly what `tests/replay/browserReplay.test.ts` does.
+
+### Inputs
+
+Invocation inputs are checked against the artifact's declared inputs **before the surface
+is touched**, so a caller mistake cannot leave a half-run workflow behind:
+
+- an unknown input is **rejected**, because a key nobody declared means the caller thinks
+  this capability does something it does not;
+- there is **no coercion**: `12345` is not a valid `string` input, and `"12345"` is not a
+  valid `number` input;
+- an omitted **optional** input resolves to the empty string, which clears the field the
+  `fill` step targets. Phase 3 has no default-value model, and a `fill` is the only thing
+  that reads an input;
+- every problem is reported at once, and no failure message ever echoes a supplied value.
+
+A step's value is either a literal in the artifact or a reference to a declared input.
+There is no template syntax, no expression evaluation, and no `eval`: a resolver that
+could compute would be a decision made at replay time.
+
+### Outputs
+
+Outputs come back only when the capability declared them, typed as it declared them:
+
+```json
+{ "status": "success", "outputs": { "memberName": "Ada Lovelace", "savingsBalance": 5234.17 } }
+```
+
+A surface extracts text, so one narrow conversion turns it into the declared type: a
+canonical numeric literal for `number`, the words true or false for `boolean`, and the
+trimmed text for `string`. A screen showing `$1,024.50` **fails** rather than being
+reinterpreted, because guessing a number out of a formatted string is a decision, and
+repairing it is an artifact change. A declared output that no step produced is a failure
+too.
+
+### Checkpoints And The Success Condition
+
+A workflow is not successful because every action returned without throwing. That proves
+its controls were operable, not that it reached the state it was recorded to reach:
+
+```text
+Click Search  ->  Action Returned  ->  Not Enough
+                                       Must Also Verify: "Member Summary" Is Visible
+```
+
+Every replay evaluates the artifact's `successCondition`, and a replay whose success
+condition fails is never reported as a success. Along the way, `checkpoint` steps assert
+state and `wait` steps wait for it, using the same four conditions: `targetVisible`,
+`targetContainsText`, `textVisible`, `urlMatches`. All of them are answered by
+`ComputerSurface.waitFor`, which waits on the state natively; replay never polls and never
+sleeps.
+
+An evaluation keeps what was expected next to what was seen, so a failure reads:
+
+```text
+REPLAY_SUCCESS_CONDITION_FAILED
+  expected: Target "Member Summary Region" Is Visible
+  observed: Not Visible
+```
+
+### Timeouts And Retries
+
+A step's budget is the artifact's override, then a replay-wide override, then the surface
+timeouts already in `AppConfig`. There is no fourth set of numbers. The budget is handed
+to the surface so the failure is the surface's own specific error, and it is also enforced
+from the outside so a wedged surface cannot make a replay hang.
+
+Retries are deliberately small: a step repeats the identical action, with the identical
+target and value, up to the `maxAttempts` the artifact declared (Phase 3 caps it at
+three). No backoff, no fallback, no alternative target. A step is only repeated when it
+cannot change the application, which means `extract`, `wait`, and `checkpoint` always, and
+an acting step only when the artifact calls it `safe`. A declared retry on a `risky` step
+is logged and not applied, because a second submit is how one request becomes two.
+
+### Failure Context
+
+A failure names the capability, the step, the action, what was expected, and what was
+observed, and it never carries a typed value, a credential, or a raw browser exception:
+`cause` is a rendered one-line summary. Invocation values are never logged, and only input
+_names_ appear in the run record.
+
+Phase 5 will formalize the wider taxonomy (success, business outcome, recoverable
+condition, hard failure) and extend these types rather than replace them.
+
 ## Technology Stack
 
 | Concern         | Choice                                                  |
@@ -381,6 +528,7 @@ reported as present or absent and never printed.
 | Command                 | What It Does                                                      |
 | ----------------------- | ----------------------------------------------------------------- |
 | `npm run dev`           | Runs the CLI from source in watch mode, loading `.env` if present |
+| `npm run replay`        | Replays a saved capability artifact, see Deterministic Replay     |
 | `npm run build`         | Compiles `src/` to `dist/` with type declarations                 |
 | `npm run lint`          | ESLint, warnings treated as failures                              |
 | `npm run lint:fix`      | ESLint with autofix                                               |
@@ -422,11 +570,33 @@ file on disk.
 | `tests/surfaces/locatorResolver.test.ts`   | Every strategy, precedence, fallback, ambiguity, budgets   |
 | `tests/surfaces/playwrightSurface.test.ts` | Each surface operation and each failure mode               |
 | `tests/surfaces/contract.test.ts`          | A whole workflow written against `ComputerSurface` alone   |
-| `tests/architecture.test.ts`               | `replay` to `llm`, Playwright and artifact boundaries      |
+| `tests/replay/browserReplay.test.ts`       | A committed artifact replayed against a real browser       |
+| `tests/architecture.test.ts`               | Replay, Playwright, and artifact dependency boundaries     |
 
-End-to-end tests live in `tests/e2e/` and run under Playwright. There are no specs yet,
-so `npm run test:e2e` passes with no tests: the harness is wired and waiting for a
-replay engine to exercise.
+`browserReplay.test.ts` is the Phase 4 proof: it loads
+`capabilities/examples/lookup-demo-member.json` through the real validator, points it at
+`tests/fixtures/member-lookup.html`, and runs it through `ReplayEngine`, `StepExecutor`,
+`ComputerSurface`, and `PlaywrightSurface` to a successful set of outputs. It covers a
+parameter change, a declared business outcome, an output the declared type cannot hold,
+a failing checkpoint, and a failing success condition. It calls no model and reaches no
+network.
+
+The replay suites that are about the engine rather than a browser run in milliseconds
+against a scripted surface:
+
+```bash
+npm run test -- tests/replay
+```
+
+| Suite                          | Covers                                                      |
+| ------------------------------ | ----------------------------------------------------------- |
+| `tests/replay/inputs.test.ts`  | Input validation and parameter resolution                   |
+| `tests/replay/engine.test.ts`  | Ordering, checkpoints, success condition, retries, budgets  |
+| `tests/replay/outputs.test.ts` | Output typing, conversion refusals, and the output contract |
+
+End-to-end tests live in `tests/e2e/` and run under Playwright. There are no specs: the
+browser suites run under Vitest so the adapter and the engine are measured by coverage, so
+`npm run test:e2e` passes with no tests.
 
 The artifact suites need no browser and run in milliseconds:
 
@@ -465,16 +635,25 @@ src/
     store.ts            FileArtifactStore: artifacts as files in a directory
     errors.ts           Typed failures, and the boundary where Zod issues stop
   cli/                  Entry point and command surface
+    replay.ts           The replay command, and the one place a surface is chosen
   config/               The only reader of process.env, Zod-validated
-  discovery/            LLM-driven exploration loop (Phase 4)
-  evidence/             Structured run evidence capture (Phase 4)
-  execution/            Action vocabulary and executor, the shared waist (Phase 4)
+  discovery/            LLM-driven exploration loop (Phase 5)
+  evidence/             Structured run evidence capture (Phase 5)
+  execution/            Action vocabulary and executor, the shared waist (Phase 5)
   handoff/              Human handoff (Phase 5)
   llm/                  Provider-agnostic model boundary
     anthropic/          Anthropic implementation (Phase 3)
   logging/              Structured JSON logger with redaction
   policy/               Safety guardrails (Phase 5)
-  replay/               Deterministic artifact execution, never imports llm/ (Phase 4)
+  replay/               Deterministic artifact execution, never imports llm/
+    ReplayEngine.ts     Validate, execute in order, verify, collect, return a result
+    StepExecutor.ts     One step against the surface, with bounded attempts
+    CheckpointEvaluator.ts  Conditions, keeping expected next to observed
+    InputValidator.ts   Invocation inputs against the declared inputs
+    ParameterResolver.ts    Literal or declared input, and nothing else
+    OutputCollector.ts  Extracted text into the declared output types
+    deadlines.ts        The budget hierarchy and the outer bound
+    ReplayResult.ts     Success, business outcome, failure
   surfaces/             The ComputerSurface contract and its implementations
     ComputerSurface.ts  The contract: navigate, observe, click, fill, extract, screenshot
     types.ts            Targets, locator strategies, observations, results
@@ -490,7 +669,8 @@ src/
   errors.ts             Shared error base with stable error codes
 tests/                  Vitest suites
   artifacts/            Schema, serialization, and artifact store suites
-  fixtures/             Local HTML the surface suites drive
+  fixtures/             Local HTML the surface and replay suites drive
+  replay/               Input, engine, output, and real-browser replay suites
   surfaces/             Surface, resolver, target, and contract suites
   e2e/                  Playwright specs
 capabilities/           Capability artifacts, one JSON file per capability
@@ -503,16 +683,17 @@ run evidence are project deliverables.
 
 ## Roadmap
 
-| Phase | Scope                                                                 | Status  |
-| ----- | --------------------------------------------------------------------- | ------- |
-| 1     | Repository foundation: config, logging, boundaries, quality gate, CI  | Done    |
-| 2     | Computer surface abstraction and the Playwright surface               | Done    |
-| 3     | Capability artifact schema, validation, serialization, and storage    | Done    |
-| 4     | Anthropic integration, discovery loop, deterministic replay, evidence | Next    |
-| 5     | Policy guardrails, error taxonomy, escalation, human handoff          | Planned |
+| Phase | Scope                                                                | Status  |
+| ----- | -------------------------------------------------------------------- | ------- |
+| 1     | Repository foundation: config, logging, boundaries, quality gate, CI | Done    |
+| 2     | Computer surface abstraction and the Playwright surface              | Done    |
+| 3     | Capability artifact schema, validation, serialization, and storage   | Done    |
+| 4     | Deterministic replay engine, replay CLI, real-browser replay proof   | Done    |
+| 5     | Anthropic integration, discovery loop, evidence, error taxonomy      | Next    |
+| 6     | Policy guardrails, escalation, human handoff                         | Planned |
 
-Exact commands for running discovery and replay will be added under **Development
-Commands** as those phases land.
+Exact commands for running discovery will be added under **Development Commands** as that
+phase lands.
 
 ## Design Notes
 

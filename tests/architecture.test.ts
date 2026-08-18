@@ -8,7 +8,8 @@ import { describe, expect, it } from 'vitest';
  * these tests make the build fail even if the lint config drifts.
  *
  * 1. Replay executes a saved capability without a model in the decision loop, so nothing
- *    under src/replay may reach the llm layer or a model SDK.
+ *    under src/replay may reach the llm layer, the discovery loop, or a model SDK. It
+ *    may not reach the browser library either: replay drives a ComputerSurface.
  * 2. Playwright is an implementation detail of one surface adapter, so nothing outside
  *    src/surfaces/playwright may import it. That is what lets a second surface be added
  *    without rewriting anything above the ComputerSurface contract.
@@ -24,6 +25,8 @@ const PLAYWRIGHT_ADAPTER_DIR = join('src', 'surfaces', 'playwright');
 const IMPORT_PATTERN = /(?:from|import)\s+['"]([^'"]+)['"]/g;
 
 const FORBIDDEN_IN_ARTIFACTS = /(^|\/)(llm|discovery|replay)(\/|$)|^@anthropic-ai\//;
+
+const FORBIDDEN_IN_REPLAY = /(^|\/)(llm|discovery)(\/|$)|^@anthropic-ai\//;
 
 function sourceFiles(dir: string): string[] {
   const entries = readdirSync(dir);
@@ -54,17 +57,40 @@ function importsOf(file: string): string[] {
 }
 
 describe('module boundaries', () => {
-  it('keeps replay free of any dependency on the llm layer', () => {
+  it('keeps replay free of any dependency on the llm layer or on discovery', () => {
     const violations: string[] = [];
-    for (const file of sourceFiles('src/replay')) {
+    for (const file of sourceFiles(join('src', 'replay'))) {
       for (const specifier of importsOf(file)) {
-        if (/(^|\/)llm(\/|$)/.test(specifier) || specifier.startsWith('@anthropic-ai/')) {
+        if (FORBIDDEN_IN_REPLAY.test(specifier)) {
           violations.push(`${file} imports ${specifier}`);
         }
       }
     }
 
     expect(violations).toEqual([]);
+  });
+
+  it('keeps replay off Playwright, so it drives whatever surface it is handed', () => {
+    const violations: string[] = [];
+    for (const file of sourceFiles(join('src', 'replay'))) {
+      for (const specifier of importsOf(file)) {
+        if (PLAYWRIGHT_PATTERN.test(specifier)) {
+          violations.push(`${file} imports ${specifier}`);
+        }
+      }
+    }
+
+    expect(violations).toEqual([]);
+  });
+
+  it('lets replay reach the application only through the surface contract', () => {
+    const specifiers = sourceFiles(join('src', 'replay')).flatMap(importsOf);
+    const surfaceImports = new Set(
+      specifiers.filter((specifier) => specifier.includes('surfaces')),
+    );
+
+    // The adapter lives under surfaces/playwright; importing it would be a second way in.
+    expect([...surfaceImports]).toEqual(['../surfaces/index.js']);
   });
 
   it('keeps Playwright inside the surface adapter that owns it', () => {
