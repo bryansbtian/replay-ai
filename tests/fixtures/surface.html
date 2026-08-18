@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Replay AI Surface Fixture</title>
+  </head>
+  <body>
+    <h1>Surface Fixture</h1>
+
+    <form id="search-form">
+      <label for="query">Search Term</label>
+      <input
+        id="query"
+        name="query"
+        type="text"
+        placeholder="Enter A Search Term"
+        data-testid="query-input"
+      />
+      <button type="submit" id="search-button" data-testid="search-button">Search</button>
+    </form>
+
+    <button type="button" id="reset-button" data-testid="reset-button" disabled>Reset</button>
+
+    <section>
+      <h2>Result</h2>
+      <p id="result" data-testid="result" data-state="empty">No Search Yet</p>
+    </section>
+
+    <button type="button" id="late-button" data-testid="late-button">Show Late Message</button>
+    <div id="late-slot"></div>
+
+    <!-- Two identical controls: the fixture for ambiguous resolution. -->
+    <div>
+      <button type="button" class="duplicate">Duplicate</button>
+      <button type="button" class="duplicate">Duplicate</button>
+    </div>
+
+    <script>
+      const form = document.getElementById('search-form');
+      const lateButton = document.getElementById('late-button');
+      const lateSlot = document.getElementById('late-slot');
+      const input = document.getElementById('query');
+      const result = document.getElementById('result');
+
+      form.addEventListener('submit', (event) => {
+        event.preventDefault();
+        const value = input.value.trim();
+        if (value.length === 0) {
+          result.textContent = 'No Search Yet';
+          result.setAttribute('data-state', 'empty');
+          return;
+        }
+        result.textContent = 'Result For ' + value;
+        result.setAttribute('data-state', 'ready');
+      });
+
+      // Appears only after a delay, so a test can prove the surface waits on state
+      // rather than on a fixed sleep.
+      lateButton.addEventListener('click', () => {
+        window.setTimeout(() => {
+          const late = document.createElement('p');
+          late.id = 'late-message';
+          late.textContent = 'Late Message';
+          lateSlot.appendChild(late);
+        }, 300);
+      });
+    </script>
+  </body>
+</html>

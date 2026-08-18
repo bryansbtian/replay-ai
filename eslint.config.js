@@ -3,6 +3,11 @@ import prettier from 'eslint-config-prettier';
 import importX from 'eslint-plugin-import-x';
 import tseslint from 'typescript-eslint';
 
+const PLAYWRIGHT_ONLY_IN_ADAPTER = {
+  group: ['playwright', 'playwright/*', '@playwright/*', 'playwright-core'],
+  message: 'Only src/surfaces/playwright may import Playwright: depend on ComputerSurface instead.',
+};
+
 export default tseslint.config(
   {
     ignores: [
@@ -59,8 +64,24 @@ export default tseslint.config(
     },
   },
   {
+    // Architectural boundary: the browser library is an implementation detail of one
+    // surface adapter. Everything else depends on the ComputerSurface contract, which is
+    // what allows a second surface to be added without touching a recorded workflow.
+    files: ['src/**/*.ts'],
+    rules: {
+      'no-restricted-imports': ['error', { patterns: [PLAYWRIGHT_ONLY_IN_ADAPTER] }],
+    },
+  },
+  {
+    files: ['src/surfaces/playwright/**/*.ts'],
+    rules: {
+      'no-restricted-imports': 'off',
+    },
+  },
+  {
     // Architectural boundary: replay must execute saved capabilities without an LLM
     // in the decision loop, so it may never reach into the llm layer or a model SDK.
+    // Repeats the Playwright rule because a later block replaces the earlier one.
     files: ['src/replay/**/*.ts'],
     rules: {
       'no-restricted-imports': [
@@ -71,6 +92,7 @@ export default tseslint.config(
               group: ['**/llm', '**/llm/**', '@anthropic-ai/*'],
               message: 'replay/ must not depend on llm/: replay runs without an LLM in the loop.',
             },
+            PLAYWRIGHT_ONLY_IN_ADAPTER,
           ],
         },
       ],
