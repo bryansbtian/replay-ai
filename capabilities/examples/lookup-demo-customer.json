@@ -1,0 +1,219 @@
+{
+  "schemaVersion": "1",
+  "id": "lookup-demo-customer",
+  "name": "Lookup Demo Customer",
+  "description": "Searches the demo support console for a customer by reference and reads their account status and open ticket count.",
+  "version": 1,
+  "application": {
+    "name": "Demo Support Console",
+    "entryPoint": "https://demo.replay-ai.test"
+  },
+  "inputs": [
+    {
+      "name": "customerReference",
+      "type": "string",
+      "required": true,
+      "description": "Reference code printed on the demo customer record, for example DEMO-1042.",
+      "sensitive": false
+    }
+  ],
+  "outputs": [
+    {
+      "name": "accountStatus",
+      "type": "string",
+      "description": "Account status shown on the customer summary, such as Active or Suspended."
+    },
+    {
+      "name": "openTicketCount",
+      "type": "number",
+      "description": "Number of support tickets currently open for the customer."
+    }
+  ],
+  "steps": [
+    {
+      "id": "open-customer-search",
+      "type": "navigate",
+      "url": "https://demo.replay-ai.test/support/customers",
+      "risk": "safe"
+    },
+    {
+      "id": "confirm-search-screen",
+      "type": "checkpoint",
+      "condition": {
+        "type": "targetVisible",
+        "target": {
+          "description": "Customer Search Heading",
+          "strategies": [
+            {
+              "kind": "role",
+              "role": "heading",
+              "name": "Customer Search"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "enter-customer-reference",
+      "type": "fill",
+      "target": {
+        "description": "Customer Reference Field",
+        "strategies": [
+          {
+            "kind": "role",
+            "role": "textbox",
+            "name": "Customer Reference"
+          },
+          {
+            "kind": "label",
+            "text": "Customer Reference"
+          },
+          {
+            "kind": "placeholder",
+            "text": "Enter A Customer Reference"
+          },
+          {
+            "kind": "attribute",
+            "attribute": "data-testid",
+            "value": "customer-reference"
+          },
+          {
+            "kind": "css",
+            "selector": "#customer-reference"
+          }
+        ]
+      },
+      "value": {
+        "source": "input",
+        "name": "customerReference"
+      },
+      "risk": "safe"
+    },
+    {
+      "id": "submit-customer-search",
+      "type": "click",
+      "target": {
+        "description": "Search Button",
+        "strategies": [
+          {
+            "kind": "role",
+            "role": "button",
+            "name": "Search",
+            "exact": true
+          },
+          {
+            "kind": "attribute",
+            "attribute": "data-testid",
+            "value": "customer-search-submit"
+          }
+        ]
+      },
+      "risk": "safe",
+      "execution": {
+        "retry": {
+          "maxAttempts": 2
+        }
+      }
+    },
+    {
+      "id": "await-search-result",
+      "type": "wait",
+      "condition": {
+        "type": "targetVisible",
+        "target": {
+          "description": "Search Result Region",
+          "strategies": [
+            {
+              "kind": "role",
+              "role": "region",
+              "name": "Search Result"
+            },
+            {
+              "kind": "attribute",
+              "attribute": "data-testid",
+              "value": "search-result"
+            }
+          ]
+        }
+      },
+      "execution": {
+        "timeoutMs": 20000
+      }
+    },
+    {
+      "id": "read-account-status",
+      "type": "extract",
+      "target": {
+        "description": "Account Status Value",
+        "strategies": [
+          {
+            "kind": "attribute",
+            "attribute": "data-field",
+            "value": "account-status"
+          },
+          {
+            "kind": "css",
+            "selector": "#customer-summary .account-status"
+          }
+        ]
+      },
+      "output": "accountStatus"
+    },
+    {
+      "id": "read-open-ticket-count",
+      "type": "extract",
+      "target": {
+        "description": "Open Ticket Count Value",
+        "strategies": [
+          {
+            "kind": "attribute",
+            "attribute": "data-field",
+            "value": "open-ticket-count"
+          },
+          {
+            "kind": "css",
+            "selector": "#customer-summary .open-tickets"
+          }
+        ]
+      },
+      "output": "openTicketCount"
+    }
+  ],
+  "successCondition": {
+    "type": "targetVisible",
+    "target": {
+      "description": "Customer Summary Heading",
+      "strategies": [
+        {
+          "kind": "role",
+          "role": "heading",
+          "name": "Customer Summary"
+        },
+        {
+          "kind": "attribute",
+          "attribute": "data-testid",
+          "value": "customer-summary"
+        }
+      ]
+    }
+  },
+  "businessOutcomes": [
+    {
+      "code": "CUSTOMER_NOT_FOUND",
+      "description": "The demo console reports that no customer matches the supplied reference.",
+      "condition": {
+        "type": "textVisible",
+        "text": "No Customer Matches That Reference"
+      }
+    }
+  ],
+  "metadata": {
+    "createdAt": "2026-08-18T00:00:00.000Z",
+    "updatedAt": "2026-08-18T00:00:00.000Z",
+    "tags": [
+      "demo",
+      "support",
+      "read-only"
+    ]
+  }
+}

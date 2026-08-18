@@ -4,3 +4,8 @@ coverage/
 playwright-report/
 test-results/
 package-lock.json
+
+# Capability artifacts are written by the artifact serializer in a canonical form.
+# Reformatting them here would break the guarantee that a saved artifact is byte
+# identical to what the serializer produces.
+capabilities/**/*.json

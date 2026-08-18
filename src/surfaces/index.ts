@@ -17,4 +17,7 @@ export {
 } from './errors.js';
 export { createTarget, DEFAULT_STRATEGY_ORDER, type CreateTargetOptions } from './target.js';
 export { DEFAULT_SURFACE_TIMEOUTS, type SurfaceTimeouts } from './timeouts.js';
+// The role vocabulary is a value as well as a type, so that a schema can validate a
+// recorded target against it.
+export { TARGET_ROLES } from './types.js';
 export type * from './types.js';
