@@ -160,7 +160,7 @@ describe('checkpoints', () => {
     if (result.status !== 'failure') {
       return;
     }
-    expect(result.code).toBe('REPLAY_WAIT_FAILED');
+    expect(result.code).toBe('REPLAY_WAIT_TIMEOUT');
     expect(result.stepId).toBe('await-summary');
   });
 
@@ -285,7 +285,7 @@ describe('business outcomes', () => {
     }
     expect(result.code).toBe('MEMBER_NOT_FOUND');
     expect(result.stepId).toBe('await-summary');
-    expect(result.description).toContain('no member matches');
+    expect(result.message).toContain('no member matches');
   });
 
   it('still reports a failure when no declared outcome matches', async () => {
@@ -323,7 +323,7 @@ describe('business outcomes', () => {
     if (result.status !== 'failure') {
       return;
     }
-    expect(result.code).toBe('REPLAY_STEP_FAILED');
+    expect(result.code).toBe('REPLAY_TARGET_NOT_FOUND');
   });
 });
 
@@ -344,7 +344,7 @@ describe('failure context', () => {
     expect(result.capabilityId).toBe('lookup-demo-member');
     expect(result.stepId).toBe('submit-search');
     expect(result.stepType).toBe('click');
-    expect(result.code).toBe('REPLAY_STEP_FAILED');
+    expect(result.code).toBe('REPLAY_TARGET_NOT_FOUND');
     expect(result.cause).toContain('SURFACE_TARGET_NOT_FOUND');
     expect(result.completedSteps.map((step) => step.stepId)).toEqual([
       'open-lookup',
@@ -366,7 +366,7 @@ describe('failure context', () => {
     if (result.status !== 'failure') {
       return;
     }
-    expect(result.code).toBe('REPLAY_UNEXPECTED');
+    expect(result.code).toBe('REPLAY_UNEXPECTED_STATE');
     expect(result.cause).toBe('Error: socket hang up');
     expect(result.cause).not.toContain('internal frame');
   });

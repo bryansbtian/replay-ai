@@ -9,8 +9,20 @@ validate inputs -> execute artifact.steps in order -> verify the success conditi
   -> collect declared outputs -> return a ReplayResult
 ```
 
-- `ReplayEngine` owns the sequence and turns everything that happens into one result.
+When a step does not succeed, three questions decide what happened, in this order:
+
+```text
+1. Is this a state the capability declares?   -> business outcome, or a declared failure
+2. Is this a state the capability can clear?  -> recover, then retry the step
+3. Neither                                    -> hard failure, and stop
+```
+
+- `ReplayEngine` owns the sequence, the three questions, and the one result.
 - `StepExecutor` applies one step and bounds its attempts.
+- `classification.ts` is the only module that knows the surface error types: it turns one
+  into a stable code, and nothing else in the engine uses `instanceof`.
+- `RecoveryPlanner` recognizes a declared condition and activates the one control the
+  artifact named for it. It never touches anything the artifact did not name.
 - `CheckpointEvaluator` asks the surface whether a state holds, keeping what was
   expected next to what was observed.
 - `InputValidator` and `ParameterResolver` decide what a step types, before anything is

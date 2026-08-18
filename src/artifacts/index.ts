@@ -6,13 +6,17 @@
  */
 export {
   capabilityArtifactSchema,
+  OUTCOME_DISPOSITIONS,
   SCHEMA_VERSION,
   VALUE_TYPES,
   type BusinessOutcomeDefinition,
   type CapabilityArtifact,
   type CapabilityMetadata,
   type InputDefinition,
+  type OutcomeDisposition,
   type OutputDefinition,
+  type RecoveryAction,
+  type RecoveryDefinition,
   type TargetApplication,
   type ValueType,
 } from './artifact.js';

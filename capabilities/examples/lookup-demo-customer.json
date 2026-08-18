@@ -204,9 +204,11 @@
       "condition": {
         "type": "textVisible",
         "text": "No Customer Matches That Reference"
-      }
+      },
+      "disposition": "businessOutcome"
     }
   ],
+  "recoveries": [],
   "metadata": {
     "createdAt": "2026-08-18T00:00:00.000Z",
     "updatedAt": "2026-08-18T00:00:00.000Z",

@@ -1,14 +1,15 @@
 import type { CapabilityStep } from '../artifacts/index.js';
-import { ReplayAiError } from '../errors.js';
 import type { Logger } from '../logging/logger.js';
-import { SurfaceUnavailableError, type ComputerSurface } from '../surfaces/index.js';
+import type { ComputerSurface } from '../surfaces/index.js';
 
 import type { CheckpointEvaluator, CheckpointOutcome } from './CheckpointEvaluator.js';
-import { DeadlineExceededError, withDeadline } from './deadlines.js';
+import { classifyThrown } from './classification.js';
+import { withDeadline } from './deadlines.js';
 import type { ResolvedInputs } from './InputValidator.js';
 import type { OutputCollector } from './OutputCollector.js';
 import { resolveParameter } from './ParameterResolver.js';
-import type { ReplayFailureCode } from './ReplayResult.js';
+import { isRetrySafe, riskOf } from './RecoveryPlanner.js';
+import type { EngineFailureCode } from './ReplayResult.js';
 
 /**
  * Applies one stored step to the surface.
@@ -23,7 +24,7 @@ import type { ReplayFailureCode } from './ReplayResult.js';
  */
 
 export interface StepFailure {
-  readonly code: ReplayFailureCode;
+  readonly code: EngineFailureCode;
   readonly message: string;
   readonly expected?: string;
   readonly observed?: string;
@@ -54,21 +55,12 @@ export interface StepExecutorOptions {
   readonly outputs: OutputCollector;
 }
 
-type ObservationOnlyStep = Extract<CapabilityStep, { type: 'extract' | 'wait' | 'checkpoint' }>;
-
-/** Steps with no `risk` field: reading and asserting cannot change the application. */
-function isObservationOnly(step: CapabilityStep): step is ObservationOnlyStep {
-  return step.type === 'extract' || step.type === 'wait' || step.type === 'checkpoint';
-}
-
 /**
  * How many times this step may be executed.
  *
  * A retry repeats the identical operation with the identical value and target, so the
- * only question is whether repeating it is safe. Reading and asserting always are. An
- * acting step is repeated only when the artifact calls it `safe`: a `risky` step is one
- * the author flagged as changing something, and a second submit is how one request
- * becomes two. Phase 3 already refuses a retry on an `irreversible` step.
+ * only question is whether repeating it is safe, which is exactly what `isRetrySafe`
+ * answers for a recovery too. Phase 3 already refuses a retry on an `irreversible` step.
  *
  * A suppressed retry is logged rather than hidden, because a declaration that does
  * nothing is worth knowing about.
@@ -78,63 +70,44 @@ function maxAttempts(step: CapabilityStep, logger: Logger): number {
   if (declared === undefined || declared <= 1) {
     return 1;
   }
-  if (isObservationOnly(step)) {
-    return declared;
-  }
-  if (step.risk === 'safe') {
+  if (isRetrySafe(step)) {
     return declared;
   }
 
   logger.warn('Retry Not Applied', {
     stepId: step.id,
     stepType: step.type,
-    risk: step.risk,
+    risk: riskOf(step),
     reason: 'a step that changes the application is not repeated automatically',
   });
   return 1;
 }
 
-/** Renders a failure's origin without carrying the original exception outwards. */
-function describeCause(error: unknown): string {
-  if (error instanceof ReplayAiError) {
-    return `${error.code}: ${error.message.split('\n')[0] ?? error.name}`;
-  }
-  if (error instanceof Error) {
-    return `${error.name}: ${error.message.split('\n')[0] ?? ''}`;
-  }
-  return 'unknown failure';
-}
-
+/**
+ * Turns anything thrown during a step into a reportable failure.
+ *
+ * The code comes from `classification.ts`, which is the only module that knows the
+ * surface error types. This function adds the part a person reads: which step, doing
+ * what, and what went wrong with it.
+ */
 function toFailure(step: CapabilityStep, budgetMs: number, error: unknown): StepFailure {
-  if (error instanceof DeadlineExceededError) {
+  const classified = classifyThrown(error);
+
+  if (classified.code === 'REPLAY_STEP_TIMEOUT') {
     return {
-      code: 'REPLAY_STEP_TIMEOUT',
+      code: classified.code,
       message: `Step "${step.id}" (${step.type}) did not complete within ${budgetMs}ms`,
       expected: `Completion Within ${budgetMs}ms`,
       observed: 'No Response',
+      cause: classified.cause,
       conditionFailed: false,
     };
   }
-  if (error instanceof SurfaceUnavailableError) {
-    return {
-      code: 'REPLAY_SURFACE_UNAVAILABLE',
-      message: `Step "${step.id}" (${step.type}) could not run: the surface is unavailable`,
-      cause: describeCause(error),
-      conditionFailed: false,
-    };
-  }
-  if (error instanceof ReplayAiError) {
-    return {
-      code: 'REPLAY_STEP_FAILED',
-      message: `Step "${step.id}" (${step.type}) failed: ${error.message.split('\n')[0] ?? ''}`,
-      cause: describeCause(error),
-      conditionFailed: false,
-    };
-  }
+
   return {
-    code: 'REPLAY_UNEXPECTED',
-    message: `Step "${step.id}" (${step.type}) failed unexpectedly`,
-    cause: describeCause(error),
+    code: classified.code,
+    message: `Step "${step.id}" (${step.type}) failed: ${classified.detail}`,
+    cause: classified.cause,
     conditionFailed: false,
   };
 }
@@ -230,7 +203,7 @@ export class StepExecutor {
         return await this.extract(step, budgetMs);
 
       case 'wait':
-        return await this.condition(step, budgetMs, 'REPLAY_WAIT_FAILED');
+        return await this.condition(step, budgetMs, 'REPLAY_WAIT_TIMEOUT');
 
       case 'checkpoint':
         return await this.condition(step, budgetMs, 'REPLAY_CHECKPOINT_FAILED');
@@ -286,7 +259,7 @@ export class StepExecutor {
   private async condition(
     step: Extract<CapabilityStep, { type: 'wait' | 'checkpoint' }>,
     budgetMs: number,
-    code: ReplayFailureCode,
+    code: EngineFailureCode,
   ): Promise<StepFailure | undefined> {
     const outcome = await this.checkpoints.evaluate(step.condition, budgetMs);
     this.logCheckpoint(step.id, outcome);
@@ -296,7 +269,7 @@ export class StepExecutor {
     }
     return {
       code,
-      message: `Step "${step.id}" (${step.type}) did not observe the expected state`,
+      message: `Step "${step.id}" (${step.type}) expected ${outcome.expected}, but the surface showed ${outcome.observed}`,
       expected: outcome.expected,
       observed: outcome.observed,
       conditionFailed: true,

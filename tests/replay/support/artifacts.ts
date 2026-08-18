@@ -70,6 +70,48 @@ export function summaryTarget(): JsonObject {
   };
 }
 
+export function sessionDialogTarget(): JsonObject {
+  return {
+    description: 'Session Warning Dialog',
+    strategies: [{ kind: 'role', role: 'dialog', name: 'Session Warning' }],
+  };
+}
+
+export function continueButtonTarget(): JsonObject {
+  return {
+    description: 'Session Warning Continue Button',
+    strategies: [{ kind: 'role', role: 'button', name: 'Continue', exact: true }],
+  };
+}
+
+/** The declared states and the recovery the Phase 5 suites exercise. */
+export function declaredStates(): JsonObject {
+  return {
+    businessOutcomes: [
+      {
+        code: 'MEMBER_NOT_FOUND',
+        description: 'No member exists for the supplied identifier.',
+        condition: { type: 'textVisible', text: 'No Member Matches That Reference' },
+      },
+      {
+        code: 'PERMISSION_DENIED',
+        description: 'The operator is not permitted to view this member.',
+        condition: { type: 'textVisible', text: 'You Do Not Have Permission To View This Member' },
+        disposition: 'failure',
+      },
+    ],
+    recoveries: [
+      {
+        code: 'KNOWN_SESSION_DIALOG',
+        description: 'The console interrupts the search with a session warning.',
+        condition: { type: 'targetVisible', target: sessionDialogTarget() },
+        action: { type: 'dismiss', target: continueButtonTarget() },
+        maxAttempts: 2,
+      },
+    ],
+  };
+}
+
 export function balanceTarget(): JsonObject {
   return {
     description: 'Savings Balance Value',

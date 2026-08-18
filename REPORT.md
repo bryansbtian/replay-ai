@@ -120,6 +120,28 @@ only surface import the whole package makes is `../surfaces/index.js`, which
 replay, and with one caller a shared waist is an abstraction with nothing on the other
 side of it. It earns its place when discovery arrives.
 
+## Where Classification Lives
+
+Phase 5 added one module and moved no responsibility. `classification.ts` is the only
+place in the engine that names a surface error type, and `RecoveryPlanner` is the only
+place that activates a control the workflow did not ask for. Both sit below
+`ReplayEngine`, which asks them questions and decides nothing about locators or browsers
+itself.
+
+That keeps the layering from Phase 4 intact:
+
+```text
+Capability Artifact -> ReplayEngine -> StepExecutor -> ComputerSurface -> PlaywrightSurface
+                            |
+                            +-- classification.ts   surface error to stable code
+                            +-- RecoveryPlanner     declared condition to declared control
+```
+
+The architecture test now also asserts that these two modules and the engine mention no
+model provider at all, in source as well as in imports. Recovery is the one place in the
+system that reacts to a failure by doing something, so it is where an AI fallback would
+first appear, and it is worth an explicit guard rather than a convention.
+
 ## Where The Artifact Sits
 
 The capability artifact is the waist of the pipeline: discovery writes it, replay reads
@@ -315,6 +337,25 @@ The repair is a format declaration on the output definition, which is additive, 
 deferred because inventing one before a workflow needs it would be guessing at the shape
 of the problem.
 
+## Declaring What The Application Says
+
+Phase 5 needed two things the schema could not express, and both were added to the
+existing declarations rather than beside them.
+
+`businessOutcomes` gained a `disposition`, defaulting to `businessOutcome`. The list is
+still the one list of known application states; most entries are answers and a few, such
+as a permission denial, mean the run must stop. A second array for the states that happen
+to stop a run would be the same concept written twice, with two places to look when a code
+turns up in a result.
+
+`recoveries` is new, and is the smallest thing that makes automatic dismissal safe: a
+condition, one control to activate, and an attempt ceiling. It is not a workflow language,
+and there is no second action kind until a workflow needs one.
+
+Both are additive with defaults, so every artifact written against the earlier schema
+still parses. That is exactly the case `schemaVersion` was designed not to need a bump
+for: an older file is readable, and this build's writer simply emits the new fields.
+
 ## Safety Metadata
 
 Acting steps carry `risk`: `safe`, `risky`, or `irreversible`, defaulting to `safe`.
@@ -486,63 +527,209 @@ step.execution.timeoutMs  ->  replay-wide override  ->  SurfaceTimeouts from App
 ```
 
 The budget is passed to the surface, so a failure is the surface's own specific error, and
-it is also enforced from the outside with a deadline. The outer bound fires a moment after
-the inner one, so a caller normally sees the specific failure, but a surface that is
-wedged or that ignores its budget still cannot make a replay hang. That is worth the
-duplication: the inner budget is for good messages, the outer one is a guarantee.
+it is also enforced from the outside with a deadline. A surface that is wedged, or that
+ignores its budget, still cannot make a replay hang. That is worth the duplication: the
+inner budget is for good messages, the outer one is a guarantee. How far apart the two sit
+is a Phase 5 correction, described under Timeout Classification.
 
-## Retries
+## The Error Taxonomy
+
+Every failure a caller sees carries a stable code that was decided by type, never by
+matching the text of a message. Wording is for people and is free to change; a code is a
+contract.
+
+The translation happens in two hops, and each makes the failure more domain specific:
+
+```text
+Playwright TimeoutError  ->  TargetNotFoundError  ->  REPLAY_TARGET_NOT_FOUND
+     (surface adapter)         (surface domain)          (replay result)
+```
+
+The first hop is Phase 2 and already existed: `PlaywrightSurface` catches browser
+exceptions, keeps the first line of the message, and throws a typed surface error with the
+original as its `cause`. The second hop is `src/replay/classification.ts`, and it is the
+only module in the engine that knows the surface error types. Nothing else does an
+`instanceof` on a failure, so there is one place to change when a surface error is added
+and one suite that asserts every surface error maps to something specific.
+
+A caller therefore never needs to understand Playwright, and never receives it either: a
+result carries a rendered one-line `cause` with no stack, and a test serializes a real
+failure and asserts that no call log, no library name, and no stack frame survives.
+
+The engine's codes are prefixed `REPLAY_`; codes an artifact declares are not. The prefix
+answers the first question a reader has about a code: did the engine work this out, or did
+the capability declare it? There is exactly one general code, `REPLAY_UNEXPECTED_STATE`,
+and it is reachable only by an error that is not a surface error at all. It is not where
+unmapped failures land, because there are none.
+
+## Business Outcomes Versus Failures
+
+"No member matches that reference" is an answer. A missing button is a defect. Treating
+them alike is what makes an automation page someone at 3am about a member who does not
+exist, so a business outcome is a status of its own and carries no `code` from the engine
+at all.
+
+The harder question is which of an application's messages are answers. "You do not have
+permission to view this member" is a state the application is entitled to show and the
+automation is entitled to recognize, but it is not an answer to the question that was
+asked, and continuing past it is not something replay may decide to do.
+
+That is declared, not inferred. Phase 3's `businessOutcomes` gained a `disposition`, which
+is `businessOutcome` by default and `failure` for a state that must stop the run. The
+alternative was an engine that classified by matching page text against a list baked into
+it, which is both the wrong place for the knowledge and exactly the thing a stable code
+must never be derived from. Only the capability's author knows which of its application's
+messages are answers.
+
+The same mechanism answers the validation-message question the assignment raises: an
+application's "member id format is invalid" is a business outcome if the artifact declares
+it as one, and a failure if it declares it as one. Nothing is categorized by default,
+because a validation message means different things in different workflows.
+
+Permission denial and session expiry are both declared as failures in the committed
+example. Permission denial, because the automation is not authorized to proceed and a
+caller must not treat it as a result. Session expiry, because this capability has no safe
+deterministic way to sign in again; when Phase 6 adds escalation, this is the state that
+will hand the session to a person rather than a state that changes classification.
+
+Declared states are only looked for after a `wait` or `checkpoint` condition did not hold,
+or after the success condition failed. Those are the moments the page has settled and is
+saying something. A control that could not be found or operated is an automation problem
+whatever the screen says, so the check is skipped there, and a healthy run never evaluates
+a declared condition at all.
+
+## Recoverable Conditions
+
+A retry says "try that again". A recovery says "we recognize the state the application is
+in, and we know the single control that clears it". The difference is knowledge, and the
+knowledge lives in the artifact:
+
+```json
+{
+  "code": "KNOWN_SESSION_DIALOG",
+  "condition": { "type": "targetVisible", "target": { "description": "Session Warning Dialog" } },
+  "action": { "type": "dismiss", "target": { "description": "Continue Button" } },
+  "maxAttempts": 2
+}
+```
+
+One action kind, not a workflow language. A recovery names a condition, one control to
+activate, and how many times the pair may be applied; replay then retries the step that
+failed. Anything richer would be branching, and branching inside an artifact is where
+determinism and reviewability both go.
+
+Declaring recoveries is what keeps automatic dismissal safe. An engine that dismissed
+whatever dialog it found would eventually approve something, which in the applications
+this project is aimed at is not a hypothetical cost. So an interstitial the artifact does
+not declare stops the run, and a browser test asserts that the unknown dialog is still on
+screen and unapproved afterwards.
+
+Recovery is bounded three ways:
+
+1. **By failure code.** Only failures an interstitial could plausibly cause are eligible:
+   a condition that did not hold, a control that could not be found or operated. A missing
+   output or an unresolved parameter is not a state a dialog is hiding, and pretending a
+   recovery might help would only add a delay before the same failure.
+2. **By step risk.** Recovery ends by repeating the step that failed, so it inherits the
+   retry rule exactly. Reading and asserting always repeat; an acting step repeats only
+   when the artifact calls it `safe`. Clearing a dialog and then re-submitting a request
+   that may already have landed is how one transfer becomes two.
+3. **By declared attempts.** Each condition may fire only `maxAttempts` times per run,
+   capped at three by the schema, counted across the whole run rather than per step.
+
+## Where A Recoverable Condition Ends Up
+
+The assignment asks for four distinctions, and three of them are ways a run can end. A
+recoverable condition is not; it is something that happens during one. So a condition that
+clears ends as a `success`, and a condition whose recovery runs out ends as a `failure`
+with `kind: "recoveryExhausted"`.
+
+Reporting a run as "recoverable" after the engine has already exhausted its recovery would
+tell a caller to do the thing the engine just tried. Instead the condition is reported in
+two places: every result carries the `recoveries` it performed, so a success that needed
+two dismissals is visibly different from one that needed none, and a failure says through
+`kind` whether it met a state nothing knows how to clear or a known state that would not
+clear. The consequence is a contract an agent can `switch` over with three cases while an
+operator reading the same object still sees the whole story.
+
+## Bounded Retries
 
 Only what the artifact declared, capped by Phase 3 at three attempts. A retry repeats the
-identical action with the identical target and the identical resolved value: no backoff
-(a fixed delay is the clock-based waiting the surface layer exists to avoid), no
-alternative target, no fallback action, and certainly no model asked to recover. A retry
-that changed what was being attempted would not be replay.
+identical action with the identical target and the identical resolved value: no backoff (a
+fixed delay is the clock-based waiting the surface layer exists to avoid), no alternative
+target, no fallback action, and certainly no model asked to recover. A retry that changed
+what was being attempted would not be replay.
 
-The conservative half is which steps repeat at all. Reading and asserting always can:
-`extract`, `wait`, and `checkpoint` cannot change the application. An acting step repeats
-only when the artifact calls it `safe`. A declared retry on a `risky` step is logged and
-not applied, because a second submit is how one request becomes two, and Phase 3 already
-refuses a retry on an `irreversible` step. The risk model is a description rather than a
-permission, so replay reads it in the direction that can only reduce what happens.
+The conservative half is which steps repeat at all, and it is now one predicate shared
+with recovery. Reading and asserting always can: `extract`, `wait`, and `checkpoint`
+cannot change the application. An acting step repeats only when the artifact calls it
+`safe`. A declared retry on a `risky` step is logged and not applied, because a second
+submit is how one request becomes two, and Phase 3 already refuses a retry on an
+`irreversible` step. The risk model is a description rather than a permission, so replay
+reads it in the direction that can only reduce what happens.
 
-## What Failure Handling Exists Now
+## Timeout Classification
 
-Three outcomes, deliberately small so Phase 5 extends rather than replaces them:
+Deliberately three codes rather than one per place a clock can run out.
 
-- **success**: every step ran, the success condition held, and every declared output was
-  produced and readable as its declared type;
-- **businessOutcome**: a condition the artifact already declared was observed, so the run
-  ends with an answer rather than an escalation;
-- **failure**: a stable code, the capability, the step, the action, the attempt count, the
-  expectation, the observation, and a rendered one-line cause.
+`REPLAY_WAIT_TIMEOUT` means a `wait` step's state never arrived. `REPLAY_CHECKPOINT_FAILED`
+means a `checkpoint` step's assertion did not hold, which is not the same thing: Phase 3
+drew that line already, and it is the difference between "the page never got there" and
+"the page went somewhere else". `REPLAY_STEP_TIMEOUT` means the step as a whole outlived
+its budget, and carries `stepType` so the caller knows what it was doing.
 
-Business outcomes are detected only where they can hide: after a `wait` or `checkpoint`
-condition did not hold, or after the success condition failed. A control that could not be
-found or operated is an automation problem whatever the screen says, so it is never
-reclassified as a business answer.
+There is deliberately no `TARGET_TIMEOUT`. The surface waits for an element and reports
+`TargetNotFoundError` whether it was absent or merely late, because it genuinely cannot
+tell the two apart, and the remedy is the same either way. A code that can never be
+reliably distinguished is worse than not having it. Navigation timeouts arrive as
+`REPLAY_NAVIGATION_FAILED` with the surface's own reason in `cause`, which is the
+actionable part.
 
-Nothing carries a secret outwards. A raw browser exception never reaches a caller; `cause`
-is a rendered summary. Invocation values are never logged and never appear in a result,
-only input names. No failure message echoes a value it rejected, because an invalid value
-can still be a secret.
+The outer deadline that guarantees a run cannot hang now sits half again above the step
+budget rather than a flat second above it. A target with several locator strategies pays a
+little overhead per strategy on top of the budget it divides between them, and a bound
+that only just cleared the budget turned a surface reporting "the summary never appeared"
+into the engine reporting "no response", which is a worse answer to the same question.
 
-## What Is Deferred To Phase 5
+## Checkpoint Failure Behaviour
 
-- **The full taxonomy.** Success, business outcome, recoverable condition, and hard
-  failure is the eventual four-way split; today recoverable and hard failures share one
-  status distinguished by code. The types were kept small on purpose so adding the
-  distinction is additive.
-- **Escalation and handoff.** Replay reports; nothing yet decides that a person should
-  take the session over.
-- **Evidence.** Runs log structured events, but nothing is persisted, no screenshot is
-  captured on failure, and there is no redaction layer. Building one now would duplicate
-  work Phase 6 is scoped to do properly.
-- **Policy.** The engine enforces no domain allowlist and no action classification. The
-  artifact's `risk` field is read only in the one direction that reduces what happens.
-- **Output formats.** A `number` output must be a canonical numeric literal today.
-- **Discovery.** Nothing writes an artifact yet; the committed examples were authored by
-  hand.
+A failed checkpoint keeps what was expected next to what was observed, and that pair is
+what makes the result debuggable without reproducing the run:
+
+```text
+REPLAY_WAIT_TIMEOUT  step "await-member-summary" (wait)
+  expected: Target "Member Summary Region" Is Visible
+  observed: Not Visible
+```
+
+Classification probes get a quarter of the locator budget rather than all of it. They run
+after a step has already failed, which means the page has finished doing whatever it was
+going to do; the question is "what is on screen now", not "wait for this to appear".
+Charging the full budget made a run that declares several states spend seconds deciding
+what to call the failure it already had.
+
+## What Is Deferred
+
+To Phase 6:
+
+- **Escalation and handoff.** Replay classifies and stops. Nothing yet decides that a
+  session should be handed to a person, which is what `SESSION_EXPIRED` is waiting for.
+- **The policy engine.** Retry and recovery safety are read from the artifact's own `risk`
+  description, which is a description and not a permission. Policy should be the authority
+  on whether a step may be repeated, not the document that describes it.
+- **Evidence.** Runs emit structured events (`Recoverable Condition Detected`, `Recovery
+Attempt Started`, `Recovery Exhausted`, `Hard Failure Classified`), but nothing is
+  persisted, no screenshot is captured on failure, and there is no redaction layer beyond
+  the logger's own.
+
+Later, and out of scope on purpose:
+
+- **A bounded LLM fallback for recovery.** The assignment names it a stretch goal. It is
+  not implemented, and the architecture test now asserts that the recovery path in
+  particular imports no model layer, because that is where such a thing would first
+  appear.
+- **Richer recovery actions.** One kind, `dismiss`, covers both states the fixture can
+  demonstrate. A second kind should arrive with a workflow that needs it, not before.
 
 # Heterogeneity & Multi-Tenant
 
@@ -686,6 +873,9 @@ Artifact-schema cuts:
 - **No backoff framework.** Attempts capped at three, no curve, no jitter, no
   per-error-class policy. Operational tuning belongs to the engine, not to a document
   committed once and read for months.
+- **No recovery language.** A recovery is a condition, one control, and a ceiling. A
+  sequence of corrective steps, a conditional, or a nested workflow would each be
+  branching inside an artifact, which is where determinism and reviewability both go.
 - **No artifact CLI command.** Validation and storage are a library API; a command belongs
   with the discovery command that will use it. `replay-ai replay` loads an artifact by path
   or by id already.
@@ -710,5 +900,23 @@ Replay-layer cuts:
   redaction included.
 - **No CLI framework.** Argument parsing is about sixty lines of `switch`. A dependency
   would be larger than the thing it replaced.
+
+Error-handling cuts:
+
+- **No fourth terminal status.** A recoverable condition is something that happens during
+  a run rather than a way one ends, so it is reported as recovery history plus a failure
+  `kind`. A `status: "recoverable"` would tell a caller to attempt what the engine already
+  attempted.
+- **No error class hierarchy.** One classification function and a flat code list. A tree
+  of exception types would need a visitor to be useful and a decision at every new leaf.
+- **No `TARGET_TIMEOUT`.** The surface cannot tell an absent element from a late one, and
+  a code that can never be reliably distinguished is worse than not having it.
+- **No string matching on exception text.** Classification is by error type only. Message
+  wording is for people, and a contract derived from it breaks on a library upgrade.
+- **No automatic dismissal of anything undeclared.** An engine that cleared whatever
+  dialog it found would eventually approve something.
+- **No LLM recovery fallback.** Named a stretch goal by the assignment, and left out: an
+  AI decision inside replay is the one thing the whole architecture is arranged to
+  prevent.
 
 Cuts made in later phases will be recorded here as they happen.

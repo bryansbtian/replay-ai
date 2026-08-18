@@ -7,7 +7,7 @@ that artifact is then _replayed_ deterministically, with no LLM in the decision 
 
 ## Current Status
 
-**Phase 4: the deterministic replay engine.**
+**Phase 5: execution results and error handling.**
 
 On top of the Phase 1 foundation (typed configuration, structured logging, a small CLI,
 enforced module boundaries, and the full quality gate), the Phase 2 surface layer (the
@@ -18,11 +18,17 @@ a saved capability**: validate an invocation, run the stored steps in order, ver
 checkpoint and the final success condition, collect the declared outputs, and return a
 structured result.
 
-Replay does not use an LLM. There is no Anthropic integration and no discovery loop in
-this repository yet, so the artifacts that exist were authored by hand rather than
-recorded. There is also no policy engine, no evidence capture, and no human handoff.
-Every directory that is still empty says so in its own README, along with the
-dependencies it is allowed to have.
+Phase 5 makes that result production-grade for everything that is not the happy path. A
+run now separates a **business outcome** (a known application answer) from a
+**recoverable condition** (a state the capability recognizes and knows how to clear) from
+a **hard failure** (a state replay will not push past), each with a stable machine-readable
+code and enough context to debug it. No browser exception ever reaches a caller.
+
+Replay does not use an LLM, and neither does its recovery. There is no Anthropic
+integration and no discovery loop in this repository yet, so the artifacts that exist were
+authored by hand rather than recorded. There is also no policy engine, no evidence
+capture, and no human handoff. Every directory that is still empty says so in its own
+README, along with the dependencies it is allowed to have.
 
 ## Architecture
 
@@ -447,11 +453,181 @@ is logged and not applied, because a second submit is how one request becomes tw
 
 A failure names the capability, the step, the action, what was expected, and what was
 observed, and it never carries a typed value, a credential, or a raw browser exception:
-`cause` is a rendered one-line summary. Invocation values are never logged, and only input
-_names_ appear in the run record.
+`cause` is a rendered one-line summary with no stack. Invocation values are never logged,
+and only input _names_ appear in the run record.
 
-Phase 5 will formalize the wider taxonomy (success, business outcome, recoverable
-condition, hard failure) and extend these types rather than replace them.
+## Execution Results
+
+A capability that only works on the happy path is not useful in production, so a replay
+says exactly what happened when it did not.
+
+### The Happy Path
+
+```text
+Valid Artifact -> Valid Inputs -> All Steps Execute -> All Checkpoints Pass
+  -> Outputs Produced -> Success Condition Passes -> Success
+```
+
+Every part of that is required. A run is never called a success because nothing threw.
+
+### The Four Distinctions
+
+```text
+Success                a normal completion, with the declared outputs
+Business Outcome       a known application answer, such as MEMBER_NOT_FOUND
+Recoverable Condition  a state the capability recognizes and knows how to clear
+Hard Failure           a state replay will not push past, so it stops
+```
+
+Three of those are ways a run can end; a recoverable condition is something that happens
+_during_ one. A condition that clears ends as a success, and a condition whose bounded
+recovery runs out ends as a failure with `kind: "recoveryExhausted"`. Reporting a run as
+"recoverable" after the engine has already exhausted its recovery would tell a caller to
+do what the engine just tried, so every result carries the `recoveries` it performed
+instead, and a failure says through `kind` which sort it is.
+
+The result contract is therefore three statuses, and a `switch` over them is exhaustive:
+
+```json
+{ "status": "success", "capabilityId": "lookup-demo-member",
+  "outputs": { "memberName": "Ada Lovelace", "savingsBalance": 5234.17 }, "recoveries": [] }
+
+{ "status": "businessOutcome", "code": "MEMBER_NOT_FOUND",
+  "message": "The demo console reports that no member matches the supplied id.",
+  "stepId": "await-member-summary" }
+
+{ "status": "failure", "kind": "terminal", "code": "PERMISSION_DENIED",
+  "message": "The signed-in operator is not permitted to view this member...",
+  "stepId": "await-member-summary" }
+
+{ "status": "failure", "kind": "recoveryExhausted", "code": "REPLAY_RECOVERY_EXHAUSTED",
+  "stepId": "await-member-summary", "attempts": 1,
+  "expected": "Target \"Member Summary Region\" Is Visible", "observed": "Not Visible" }
+```
+
+Optional fields appear only when they mean something. No result is padded with nulls.
+
+### Error Codes
+
+Codes are for machines and messages are for people, so a caller branches on the code and
+never on the wording. Engine codes are prefixed `REPLAY_` and artifact-declared codes are
+not, which answers the first question a reader has about a code in a result: did the
+engine work this out, or did the capability declare it?
+
+| Engine Code                       | Means                                             |
+| --------------------------------- | ------------------------------------------------- |
+| `REPLAY_INPUTS_INVALID`           | The invocation did not match the declared inputs  |
+| `REPLAY_PARAMETER_UNRESOLVED`     | A value reference named an input nobody supplied  |
+| `REPLAY_TARGET_NOT_FOUND`         | No locator strategy matched                       |
+| `REPLAY_AMBIGUOUS_TARGET`         | Several matched and none matched exactly one      |
+| `REPLAY_TARGET_INVALID`           | The stored target cannot be resolved at all       |
+| `REPLAY_NAVIGATION_FAILED`        | The surface could not reach the location          |
+| `REPLAY_ACTION_FAILED`            | The control resolved but the interaction did not  |
+| `REPLAY_CHECKPOINT_FAILED`        | A `checkpoint` step asserted a state that was not |
+| `REPLAY_WAIT_TIMEOUT`             | A `wait` step's state never arrived               |
+| `REPLAY_STEP_TIMEOUT`             | The step outlived its whole budget                |
+| `REPLAY_SUCCESS_CONDITION_FAILED` | Every step ran, the success state was not reached |
+| `REPLAY_OUTPUT_EXTRACTION_FAILED` | The target resolved but nothing could be read     |
+| `REPLAY_OUTPUT_MISSING`           | A declared output was never produced              |
+| `REPLAY_OUTPUT_TYPE_MISMATCH`     | The text could not be read as the declared type   |
+| `REPLAY_OUTPUT_UNDECLARED`        | A step assigned to an output nobody declared      |
+| `REPLAY_RECOVERY_EXHAUSTED`       | A recognized condition would not clear            |
+| `REPLAY_SURFACE_UNAVAILABLE`      | The surface went away mid-run                     |
+| `REPLAY_UNEXPECTED_STATE`         | Genuinely unclassifiable, and never a dumping bin |
+
+### Declaring What The Application Says
+
+The capability declares which of its application's messages are answers and which are
+stops, because only its author knows. An engine that guessed would be classifying by
+matching page text against a list baked into it:
+
+```json
+{
+  "businessOutcomes": [
+    {
+      "code": "MEMBER_NOT_FOUND",
+      "disposition": "businessOutcome",
+      "condition": { "type": "textVisible", "text": "No Member Matches That Reference" }
+    },
+    {
+      "code": "PERMISSION_DENIED",
+      "disposition": "failure",
+      "condition": {
+        "type": "textVisible",
+        "text": "You Do Not Have Permission To View This Member"
+      }
+    }
+  ]
+}
+```
+
+A permission denial is a **hard failure** rather than a business outcome: the workflow did
+not answer the question it was asked, and the automation is not authorized to proceed, so
+a caller must not treat it as a result to act on. An expired session is the same, because
+this capability has no safe deterministic way to sign in again. An application validation
+message would be a business outcome if the artifact declares it as one; nothing is
+categorized by default.
+
+Declared states are only looked for after a `wait` or `checkpoint` condition did not hold,
+or after the success condition failed. A control that could not be found or operated is an
+automation problem whatever the screen says.
+
+### Recoverable Conditions
+
+A retry says "try that again". A recovery says "we recognize the state the application is
+in, and we know the single control that clears it". The knowledge lives in the artifact:
+
+```json
+{
+  "recoveries": [
+    {
+      "code": "KNOWN_SESSION_DIALOG",
+      "condition": {
+        "type": "targetVisible",
+        "target": { "description": "Session Warning Dialog", "strategies": [] }
+      },
+      "action": {
+        "type": "dismiss",
+        "target": { "description": "Session Warning Continue Button", "strategies": [] }
+      },
+      "maxAttempts": 2
+    }
+  ]
+}
+```
+
+Replay clears the state, retries the step that failed, and records what it did. It is
+bounded three ways: only failures an interstitial could plausibly cause are eligible, only
+a step that is safe to repeat is retried, and each condition may fire only as many times
+as the artifact allowed. **An interstitial the artifact does not declare is never touched**
+and stops the run, which matters most in exactly the applications this project is aimed at.
+
+### Trying The Scenarios
+
+The fixture reaches every runtime condition from one member id, so a scenario is named by
+the value you supply:
+
+| Member ID | What Happens                     | Result                                      |
+| --------- | -------------------------------- | ------------------------------------------- |
+| `12345`   | Normal lookup                    | `success`                                   |
+| `00000`   | No such member                   | `businessOutcome` `MEMBER_NOT_FOUND`        |
+| `99999`   | Not permitted to view            | `failure` `PERMISSION_DENIED`               |
+| `55555`   | Session has expired              | `failure` `SESSION_EXPIRED`                 |
+| `77777`   | Known session warning            | `success`, recovered `KNOWN_SESSION_DIALOG` |
+| `88888`   | Request did not land             | `success`, recovered `TRANSIENT_LOAD`       |
+| `44444`   | Known warning that never clears  | `failure` `REPLAY_RECOVERY_EXHAUSTED`       |
+| `66666`   | An interstitial nothing declares | `failure` `REPLAY_WAIT_TIMEOUT`             |
+| `24680`   | A balance the type cannot hold   | `failure` `REPLAY_OUTPUT_TYPE_MISMATCH`     |
+
+To run one, point a copy of the example artifact at the local fixture and invoke it. Run
+events go to stderr and the result is the whole of stdout, so the output pipes into `jq`:
+
+```bash
+npm run replay -- --artifact ./local-member.json --input memberId=99999 | jq '.code'
+```
+
+Exit codes stay as they were: `0` for success, `2` for a business outcome, `1` for a
+failure.
 
 ## Technology Stack
 
@@ -571,6 +747,7 @@ file on disk.
 | `tests/surfaces/playwrightSurface.test.ts` | Each surface operation and each failure mode               |
 | `tests/surfaces/contract.test.ts`          | A whole workflow written against `ComputerSurface` alone   |
 | `tests/replay/browserReplay.test.ts`       | A committed artifact replayed against a real browser       |
+| `tests/replay/browserScenarios.test.ts`    | Every runtime condition, driven through a real browser     |
 | `tests/architecture.test.ts`               | Replay, Playwright, and artifact dependency boundaries     |
 
 `browserReplay.test.ts` is the Phase 4 proof: it loads
@@ -581,6 +758,11 @@ parameter change, a declared business outcome, an output the declared type canno
 a failing checkpoint, and a failing success condition. It calls no model and reaches no
 network.
 
+`browserScenarios.test.ts` is the Phase 5 proof, and drives every row of the scenario
+table above through the same chain: an answer, two declared stops, two recoveries, an
+exhausted recovery, an interstitial nothing declares, and an unreadable output. It also
+asserts that the unknown dialog is still on screen and unapproved afterwards.
+
 The replay suites that are about the engine rather than a browser run in milliseconds
 against a scripted surface:
 
@@ -588,11 +770,14 @@ against a scripted surface:
 npm run test -- tests/replay
 ```
 
-| Suite                          | Covers                                                      |
-| ------------------------------ | ----------------------------------------------------------- |
-| `tests/replay/inputs.test.ts`  | Input validation and parameter resolution                   |
-| `tests/replay/engine.test.ts`  | Ordering, checkpoints, success condition, retries, budgets  |
-| `tests/replay/outputs.test.ts` | Output typing, conversion refusals, and the output contract |
+| Suite                                 | Covers                                                      |
+| ------------------------------------- | ----------------------------------------------------------- |
+| `tests/replay/inputs.test.ts`         | Input validation and parameter resolution                   |
+| `tests/replay/engine.test.ts`         | Ordering, checkpoints, success condition, retries, budgets  |
+| `tests/replay/outputs.test.ts`        | Output typing, conversion refusals, and the output contract |
+| `tests/replay/classification.test.ts` | Every surface error to a code, and what never leaks out     |
+| `tests/replay/outcomes.test.ts`       | Business outcomes, declared failures, undeclared states     |
+| `tests/replay/recovery.test.ts`       | Recognition, bounded recovery, exhaustion, and refusals     |
 
 End-to-end tests live in `tests/e2e/` and run under Playwright. There are no specs: the
 browser suites run under Vitest so the adapter and the engine are measured by coverage, so
@@ -637,23 +822,25 @@ src/
   cli/                  Entry point and command surface
     replay.ts           The replay command, and the one place a surface is chosen
   config/               The only reader of process.env, Zod-validated
-  discovery/            LLM-driven exploration loop (Phase 5)
-  evidence/             Structured run evidence capture (Phase 5)
-  execution/            Action vocabulary and executor, the shared waist (Phase 5)
-  handoff/              Human handoff (Phase 5)
+  discovery/            LLM-driven exploration loop (Phase 7)
+  evidence/             Structured run evidence capture (Phase 6)
+  execution/            Action vocabulary and executor, the shared waist (Phase 7)
+  handoff/              Human handoff (Phase 6)
   llm/                  Provider-agnostic model boundary
-    anthropic/          Anthropic implementation (Phase 3)
+    anthropic/          Anthropic implementation (Phase 7)
   logging/              Structured JSON logger with redaction
-  policy/               Safety guardrails (Phase 5)
+  policy/               Safety guardrails (Phase 6)
   replay/               Deterministic artifact execution, never imports llm/
     ReplayEngine.ts     Validate, execute in order, verify, collect, return a result
     StepExecutor.ts     One step against the surface, with bounded attempts
+    classification.ts   The one place a surface error becomes a stable code
+    RecoveryPlanner.ts  Recognizes a declared condition and clears it, bounded
     CheckpointEvaluator.ts  Conditions, keeping expected next to observed
     InputValidator.ts   Invocation inputs against the declared inputs
     ParameterResolver.ts    Literal or declared input, and nothing else
     OutputCollector.ts  Extracted text into the declared output types
     deadlines.ts        The budget hierarchy and the outer bound
-    ReplayResult.ts     Success, business outcome, failure
+    ReplayResult.ts     Success, business outcome, failure, and the code vocabulary
   surfaces/             The ComputerSurface contract and its implementations
     ComputerSurface.ts  The contract: navigate, observe, click, fill, extract, screenshot
     types.ts            Targets, locator strategies, observations, results
