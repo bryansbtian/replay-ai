@@ -7,16 +7,19 @@ that artifact is then _replayed_ deterministically, with no LLM in the decision 
 
 ## Current Status
 
-**Phase 2: the computer surface abstraction and its first implementation.**
+**Phase 3: the capability artifact schema.**
 
 On top of the Phase 1 foundation (typed configuration, structured logging, a small CLI,
-enforced module boundaries, and the full quality gate) the repository now contains a
-working surface layer: the `ComputerSurface` contract, a locator-strategy target model,
-and a Playwright-backed implementation of that contract.
+enforced module boundaries, and the full quality gate) and the Phase 2 surface layer (the
+`ComputerSurface` contract, a locator-strategy target model, and a Playwright-backed
+implementation) the repository now contains the middle contract of the system: a typed,
+versioned, validated capability artifact, its canonical JSON serialization, and a local
+file store for it.
 
-There is still no Anthropic integration, no discovery loop, no artifact schema, no
-replay engine, no policy engine, and no human handoff. Every directory that is still
-empty says so in its own README, along with the dependencies it is allowed to have.
+There is still no Anthropic integration, no discovery loop, no replay engine, no policy
+engine, and no human handoff. Phase 3 defines and validates what a workflow _is_; it does
+not run one. Every directory that is still empty says so in its own README, along with
+the dependencies it is allowed to have.
 
 ## Architecture
 
@@ -44,7 +47,7 @@ Discovery / Replay
 Surface Policy Evidence
 ```
 
-Two rules matter more than the rest:
+A few rules matter more than the rest:
 
 1. **`replay/` must never import from `llm/`.** Replay executes a saved capability
    without a model deciding anything, which is what makes it deterministic and cheap.
@@ -57,6 +60,10 @@ Two rules matter more than the rest:
 3. **Playwright appears only under `src/surfaces/playwright/`.** Everything else depends
    on the `ComputerSurface` contract. Enforced the same way as the first rule: a scoped
    ESLint `no-restricted-imports` rule plus a test in `tests/architecture.test.ts`.
+4. **`artifacts/` depends on neither side of the pipeline.** The capability artifact is
+   the contract between discovery and replay, so it may not import `llm/`, `discovery/`,
+   `replay/`, or a model SDK. It reuses the surface target model and nothing else.
+   Enforced the same way, and by the same test.
 
 ## Computer Surface
 
@@ -154,6 +161,150 @@ and taken back, because no automation object believes it owns the session lifeti
 
 Only the Playwright surface exists. Legacy-web, accessibility-tree, and desktop surfaces
 are future extensions the contract was shaped for, not code that is present today.
+
+## Capability Artifacts
+
+A **capability artifact** is one workflow, frozen. It records the ordered steps, the
+control each step acts on, the values a caller must supply, the values the workflow
+returns, and the checkpoint that proves the workflow reached the state it was recorded
+to reach. It is a plain JSON document with no model, browser, or discovery vocabulary in
+it, so a person can review it in a pull request, an agent can decide whether to call it,
+and a later replay engine can execute it with no LLM in the decision loop.
+
+Artifacts live in `capabilities/`, one file per capability, named `<id>.json`. The
+location is `CAPABILITIES_DIR`. Committed examples live in `capabilities/examples/`; the
+store ignores subdirectories, so an example is documentation and a fixture rather than
+an installed capability.
+
+### The Shape
+
+```jsonc
+{
+  "schemaVersion": "1",              // The file format
+  "id": "lookup-demo-customer",      // Machine identifier, also the file name
+  "name": "Lookup Demo Customer",    // Human-facing, Title Case
+  "description": "...",
+  "version": 1,                      // The revision of this capability
+  "application": { "name": "Demo Support Console", "entryPoint": "https://demo.replay-ai.test" },
+  "inputs": [...],
+  "outputs": [...],
+  "steps": [...],
+  "successCondition": { ... },
+  "businessOutcomes": [...],
+  "metadata": { "createdAt": "...", "updatedAt": "...", "tags": [] }
+}
+```
+
+`schemaVersion` and `version` answer different questions. `schemaVersion` is the file
+format, currently `"1"`, and it is what makes a future migration possible: a reader can
+tell what it is holding before it tries to parse it. `version` is the revision of this
+particular capability, and it increments when the workflow is re-recorded or repaired.
+An unsupported `schemaVersion` fails validation with exactly that message, before any
+shape checking runs.
+
+### Steps
+
+An ordered list, each entry a discriminated union member carrying only the fields its
+action needs.
+
+| Step         | Fields                    | Notes                                      |
+| ------------ | ------------------------- | ------------------------------------------ |
+| `navigate`   | `url`, `risk`             | A literal absolute URL                     |
+| `click`      | `target`, `risk`          | Target is the Phase 2 model                |
+| `fill`       | `target`, `value`, `risk` | Value is a literal or an input reference   |
+| `extract`    | `target`, `output`        | Assigns text to a declared output          |
+| `wait`       | `condition`               | State-based only; there is no sleep step   |
+| `checkpoint` | `condition`               | Asserts the workflow is where it should be |
+
+Every step has an `id` and may carry `execution` overrides (`timeoutMs`, and
+`retry.maxAttempts` up to three). Replay owns the defaults; the artifact only says where
+a step differs.
+
+### Values And Parameter References
+
+One value model, used everywhere a step needs a value:
+
+```json
+{ "source": "literal", "value": "Checking" }
+{ "source": "input", "name": "customerReference" }
+```
+
+A reference is structured data, not a template string, so validation can prove it points
+at an input the capability actually declares.
+
+### Checkpoints
+
+The same four conditions serve the capability's `successCondition`, a `wait` step, a
+`checkpoint` step, and a business outcome:
+
+```text
+targetVisible        A target is present and visible
+targetContainsText   A target is visible and contains given text
+textVisible          Given text is visible anywhere
+urlMatches           The location matches a regular expression
+```
+
+### Business Outcomes
+
+An expected result of the business process is not a broken automation. A capability can
+declare the answers it knows about, so a later run can end with a result instead of an
+escalation:
+
+```json
+{
+  "code": "CUSTOMER_NOT_FOUND",
+  "description": "The demo console reports that no customer matches the supplied reference.",
+  "condition": { "type": "textVisible", "text": "No Customer Matches That Reference" }
+}
+```
+
+Detection is not implemented. Phase 3 only makes the artifact able to say it.
+
+### Safety Metadata
+
+Acting steps carry a `risk` of `safe`, `risky`, or `irreversible`, defaulting to `safe`.
+It is a description, never a permission: an artifact grants itself nothing, and the
+policy engine that will read it stays external and authoritative. The one rule enforced
+today is that an irreversible step may not declare a retry.
+
+### Validating And Loading
+
+```ts
+import {
+  FileArtifactStore,
+  deserializeCapabilityArtifact,
+  parseCapabilityArtifact,
+  serializeCapabilityArtifact,
+} from './src/artifacts/index.js';
+
+const artifact = parseCapabilityArtifact(someUnknownValue); // schema, then semantics
+const restored = deserializeCapabilityArtifact(json, { source: path });
+const text = serializeCapabilityArtifact(artifact); // canonical, indented, newline-terminated
+
+const store = new FileArtifactStore({ directory: config.capabilitiesDir });
+await store.save(artifact);
+await store.load('lookup-demo-customer');
+await store.list();
+```
+
+There is one way in. Unknown data is never treated as an artifact without passing
+schema validation and then semantic validation, which checks the relationships a schema
+cannot: unique step ids, input names, output names, and outcome codes; every parameter
+reference pointing at a declared input; every extract step assigning a declared output;
+no declared input left unread and no declared output left unwritten.
+
+A failure throws `ArtifactValidationError` listing every problem with its location:
+
+```text
+ARTIFACT_INVALID: Capability artifact capabilities/lookup-demo-customer.json is invalid:
+  steps[1].value.name: no input named "unknownMember" is declared by this capability
+  outputs[0].name: output "balance" is declared but no extract step produces it
+```
+
+Serialization runs the artifact back through validation before writing, so a file that
+exists is a file that parses. Output is indented, ends with a newline, and has a key
+order that does not depend on how the object was built, which keeps a pull request diff
+about the workflow rather than about object construction.
 
 ## Technology Stack
 
@@ -271,11 +422,26 @@ file on disk.
 | `tests/surfaces/locatorResolver.test.ts`   | Every strategy, precedence, fallback, ambiguity, budgets   |
 | `tests/surfaces/playwrightSurface.test.ts` | Each surface operation and each failure mode               |
 | `tests/surfaces/contract.test.ts`          | A whole workflow written against `ComputerSurface` alone   |
-| `tests/architecture.test.ts`               | `replay` to `llm`, and Playwright confined to its adapter  |
+| `tests/architecture.test.ts`               | `replay` to `llm`, Playwright and artifact boundaries      |
 
 End-to-end tests live in `tests/e2e/` and run under Playwright. There are no specs yet,
 so `npm run test:e2e` passes with no tests: the harness is wired and waiting for a
 replay engine to exercise.
+
+The artifact suites need no browser and run in milliseconds:
+
+```bash
+npm run test -- tests/artifacts
+```
+
+| Suite                                   | Covers                                                  |
+| --------------------------------------- | ------------------------------------------------------- |
+| `tests/artifacts/schema.test.ts`        | Every step, checkpoint, reference, and rejection case   |
+| `tests/artifacts/serialization.test.ts` | Round trip, canonical output, and the committed example |
+| `tests/artifacts/store.test.ts`         | Save, load, list, malformed files, and path traversal   |
+
+Filesystem cases run in temporary directories, so the suite never writes into the
+repository's own `capabilities/` directory.
 
 Earlier suites cover configuration loading and validation, secret redaction in both the
 config projection and the logger, and the CLI command surface and its exit codes.
@@ -289,10 +455,18 @@ config projection and the logger, and the CLI command surface and its exit codes
   dependabot.yml        Weekly npm and GitHub Actions updates
   SECURITY.md           How to report a vulnerability privately
 src/
-  artifacts/            Capability artifact schema and persistence (Phase 3)
+  artifacts/            The capability artifact: schema, validation, storage
+    artifact.ts         The capability envelope, schema version, inputs, outputs
+    steps.ts            Values, targets, checkpoints, and the step union
+    identifiers.ts      Identifier rules shared by the schema and the store
+    validation.ts       parseCapabilityArtifact, the single entry point
+    semantics.ts        Cross-field rules a schema cannot express
+    serialization.ts    Canonical JSON out, validated JSON in
+    store.ts            FileArtifactStore: artifacts as files in a directory
+    errors.ts           Typed failures, and the boundary where Zod issues stop
   cli/                  Entry point and command surface
   config/               The only reader of process.env, Zod-validated
-  discovery/            LLM-driven exploration loop (Phase 3)
+  discovery/            LLM-driven exploration loop (Phase 4)
   evidence/             Structured run evidence capture (Phase 4)
   execution/            Action vocabulary and executor, the shared waist (Phase 4)
   handoff/              Human handoff (Phase 5)
@@ -315,10 +489,12 @@ src/
       session.ts            Browser lifecycle, owned outside the surface
   errors.ts             Shared error base with stable error codes
 tests/                  Vitest suites
+  artifacts/            Schema, serialization, and artifact store suites
   fixtures/             Local HTML the surface suites drive
   surfaces/             Surface, resolver, target, and contract suites
   e2e/                  Playwright specs
-capabilities/           Committed example capability artifacts (deliverable)
+capabilities/           Capability artifacts, one JSON file per capability
+  examples/             Committed example artifacts (deliverable)
 evidence/               Committed example run evidence (deliverable)
 ```
 
@@ -327,13 +503,13 @@ run evidence are project deliverables.
 
 ## Roadmap
 
-| Phase | Scope                                                                | Status  |
-| ----- | -------------------------------------------------------------------- | ------- |
-| 1     | Repository foundation: config, logging, boundaries, quality gate, CI | Done    |
-| 2     | Computer surface abstraction and the Playwright surface              | Done    |
-| 3     | Anthropic integration, discovery loop, capability artifact schema    | Next    |
-| 4     | Execution layer, deterministic replay, evidence capture              | Planned |
-| 5     | Policy guardrails, error taxonomy, escalation, human handoff         | Planned |
+| Phase | Scope                                                                 | Status  |
+| ----- | --------------------------------------------------------------------- | ------- |
+| 1     | Repository foundation: config, logging, boundaries, quality gate, CI  | Done    |
+| 2     | Computer surface abstraction and the Playwright surface               | Done    |
+| 3     | Capability artifact schema, validation, serialization, and storage    | Done    |
+| 4     | Anthropic integration, discovery loop, deterministic replay, evidence | Next    |
+| 5     | Policy guardrails, error taxonomy, escalation, human handoff          | Planned |
 
 Exact commands for running discovery and replay will be added under **Development
 Commands** as those phases land.

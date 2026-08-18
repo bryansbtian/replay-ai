@@ -12,42 +12,48 @@
  * list: every entry is a role real automation targets, and keeping the union closed
  * means a mistyped role fails at compile time instead of resolving to nothing at run
  * time.
+ *
+ * Kept as a runtime list as well, so that a schema validating a recorded target can
+ * check a role against the same vocabulary instead of restating it.
  */
-export type TargetRole =
-  | 'alert'
-  | 'banner'
-  | 'button'
-  | 'cell'
-  | 'checkbox'
-  | 'columnheader'
-  | 'combobox'
-  | 'dialog'
-  | 'form'
-  | 'heading'
-  | 'img'
-  | 'link'
-  | 'list'
-  | 'listbox'
-  | 'listitem'
-  | 'main'
-  | 'menu'
-  | 'menuitem'
-  | 'navigation'
-  | 'option'
-  | 'progressbar'
-  | 'radio'
-  | 'region'
-  | 'row'
-  | 'searchbox'
-  | 'slider'
-  | 'spinbutton'
-  | 'status'
-  | 'switch'
-  | 'tab'
-  | 'table'
-  | 'tabpanel'
-  | 'textbox'
-  | 'tooltip';
+export const TARGET_ROLES = [
+  'alert',
+  'banner',
+  'button',
+  'cell',
+  'checkbox',
+  'columnheader',
+  'combobox',
+  'dialog',
+  'form',
+  'heading',
+  'img',
+  'link',
+  'list',
+  'listbox',
+  'listitem',
+  'main',
+  'menu',
+  'menuitem',
+  'navigation',
+  'option',
+  'progressbar',
+  'radio',
+  'region',
+  'row',
+  'searchbox',
+  'slider',
+  'spinbutton',
+  'status',
+  'switch',
+  'tab',
+  'table',
+  'tabpanel',
+  'textbox',
+  'tooltip',
+] as const;
+
+export type TargetRole = (typeof TARGET_ROLES)[number];
 
 /** Matches by accessible role, optionally narrowed by accessible name. */
 export interface RoleLocator {

@@ -79,6 +79,33 @@ export default tseslint.config(
     },
   },
   {
+    // Architectural boundary: a capability artifact is the contract between discovery and
+    // replay, so it must stay independent of both, and of any model SDK. That is what
+    // keeps a stored artifact readable by a replay engine with no LLM in its loop.
+    // Repeats the Playwright rule because a later block replaces the earlier one.
+    files: ['src/artifacts/**/*.ts'],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        {
+          patterns: [
+            {
+              group: ['**/llm', '**/llm/**', '**/discovery', '**/discovery/**', '@anthropic-ai/*'],
+              message:
+                'artifacts/ must not depend on llm/ or discovery/: an artifact is model-provider independent.',
+            },
+            {
+              group: ['**/replay', '**/replay/**'],
+              message:
+                'artifacts/ describes a workflow and must not depend on the engine that executes it.',
+            },
+            PLAYWRIGHT_ONLY_IN_ADAPTER,
+          ],
+        },
+      ],
+    },
+  },
+  {
     // Architectural boundary: replay must execute saved capabilities without an LLM
     // in the decision loop, so it may never reach into the llm layer or a model SDK.
     // Repeats the Playwright rule because a later block replaces the earlier one.
