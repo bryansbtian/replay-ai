@@ -1,6 +1,6 @@
 import type { OutputDefinition, ValueType } from '../artifacts/index.js';
 
-import type { OutputValue, ReplayFailureCode } from './ReplayResult.js';
+import type { EngineFailureCode, OutputValue } from './ReplayResult.js';
 
 /**
  * Turns what the surface read off the screen into the capability's declared outputs.
@@ -61,7 +61,7 @@ function convert(text: string, type: ValueType): OutputValue | undefined {
 
 /** Why an extracted value could not become an output. */
 export interface OutputProblem {
-  readonly code: ReplayFailureCode;
+  readonly code: EngineFailureCode;
   readonly message: string;
   readonly expected: string;
   readonly observed: string;

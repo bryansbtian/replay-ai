@@ -2,8 +2,8 @@
   "schemaVersion": "1",
   "id": "lookup-demo-member",
   "name": "Lookup Demo Member",
-  "description": "Searches the demo member console by member id and reads the member name and savings balance from the summary.",
-  "version": 1,
+  "description": "Searches the demo member console by member id and reads the member name and savings balance, recognizing the states the console answers with instead of a summary.",
+  "version": 2,
   "application": {
     "name": "Demo Member Console",
     "entryPoint": "https://demo.replay-ai.test/members"
@@ -133,7 +133,7 @@
         }
       },
       "execution": {
-        "timeoutMs": 5000
+        "timeoutMs": 3000
       }
     },
     {
@@ -193,12 +193,103 @@
       "condition": {
         "type": "textVisible",
         "text": "No Member Matches That Reference"
-      }
+      },
+      "disposition": "businessOutcome"
+    },
+    {
+      "code": "PERMISSION_DENIED",
+      "description": "The signed-in operator is not permitted to view this member, so the workflow must stop rather than look for another way in.",
+      "condition": {
+        "type": "textVisible",
+        "text": "You Do Not Have Permission To View This Member"
+      },
+      "disposition": "failure"
+    },
+    {
+      "code": "SESSION_EXPIRED",
+      "description": "The console session has expired, and this capability has no safe way to sign in again.",
+      "condition": {
+        "type": "textVisible",
+        "text": "Your Session Has Expired"
+      },
+      "disposition": "failure"
+    }
+  ],
+  "recoveries": [
+    {
+      "code": "KNOWN_SESSION_DIALOG",
+      "description": "The console interrupts the search with a session warning that is cleared by acknowledging it.",
+      "condition": {
+        "type": "targetVisible",
+        "target": {
+          "description": "Session Warning Dialog",
+          "strategies": [
+            {
+              "kind": "role",
+              "role": "dialog",
+              "name": "Session Warning"
+            },
+            {
+              "kind": "attribute",
+              "attribute": "data-testid",
+              "value": "session-warning"
+            }
+          ]
+        }
+      },
+      "action": {
+        "type": "dismiss",
+        "target": {
+          "description": "Session Warning Continue Button",
+          "strategies": [
+            {
+              "kind": "role",
+              "role": "button",
+              "name": "Continue",
+              "exact": true
+            },
+            {
+              "kind": "attribute",
+              "attribute": "data-testid",
+              "value": "session-continue"
+            }
+          ]
+        }
+      },
+      "maxAttempts": 2
+    },
+    {
+      "code": "TRANSIENT_LOAD",
+      "description": "The member record request did not land, and the console offers the control that runs it again.",
+      "condition": {
+        "type": "textVisible",
+        "text": "Loading Member Record"
+      },
+      "action": {
+        "type": "dismiss",
+        "target": {
+          "description": "Retry Search Button",
+          "strategies": [
+            {
+              "kind": "role",
+              "role": "button",
+              "name": "Retry Search",
+              "exact": true
+            },
+            {
+              "kind": "attribute",
+              "attribute": "data-testid",
+              "value": "load-retry"
+            }
+          ]
+        }
+      },
+      "maxAttempts": 2
     }
   ],
   "metadata": {
     "createdAt": "2026-08-18T00:00:00.000Z",
-    "updatedAt": "2026-08-18T00:00:00.000Z",
+    "updatedAt": "2026-08-19T00:00:00.000Z",
     "tags": [
       "demo",
       "member",

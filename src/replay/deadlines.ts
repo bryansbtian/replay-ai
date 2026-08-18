@@ -15,11 +15,32 @@ import type { SurfaceTimeouts } from '../surfaces/index.js';
  *
  * The budget is handed to the surface, so a failure is the surface's own specific error.
  * It is *also* enforced from the outside, so a surface that ignores its budget, or one
- * that is wedged, still cannot make a replay hang. The outer bound fires a moment later
- * than the inner one, so the specific error is what a caller normally sees.
+ * that is wedged, still cannot make a replay hang.
  */
 
+/**
+ * The outer bound sits half again above the budget, and never less than a second above
+ * it.
+ *
+ * It is a guard against a wedged surface, not a competitor to the surface's own timeout.
+ * A target with several locator strategies pays a little overhead per strategy on top of
+ * the budget it divides between them, so a bound that only just cleared the budget would
+ * turn a surface reporting "the summary never appeared" into the engine reporting "no
+ * response", which is a worse answer to the same question.
+ */
+const OUTER_BOUND_FACTOR = 1.5;
 const OUTER_BOUND_GRACE_MS = 1_000;
+
+/**
+ * A classification probe gets a quarter of the locator budget.
+ *
+ * Classification runs after a step has already failed, which means the page has finished
+ * doing whatever it was going to do. The question is "what is on screen now", not "wait
+ * for this to appear", and the full locator budget is the answer to the second question.
+ * Charging it for the first would make a run that meets several declared states spend
+ * seconds deciding what to call the failure it already has.
+ */
+const PROBE_BUDGET_DIVISOR = 4;
 
 /** Raised by `withDeadline` when a surface call outlived its whole budget. */
 export class DeadlineExceededError extends Error {
@@ -50,6 +71,18 @@ function defaultBudgetMs(step: CapabilityStep, timeouts: SurfaceTimeouts): numbe
   return timeouts.locatorMs + timeouts.actionMs;
 }
 
+/**
+ * Budget for one probe of a settled page: recognizing a declared state, or a declared
+ * recoverable condition.
+ *
+ * Derived from the surface budget rather than fixed, so slowing the whole surface down
+ * for a sluggish application slows these down too. The classification pass as a whole is
+ * bounded by this multiplied by the number of states the artifact declares.
+ */
+export function probeBudgetMs(timeouts: SurfaceTimeouts): number {
+  return Math.max(1, Math.floor(timeouts.locatorMs / PROBE_BUDGET_DIVISOR));
+}
+
 export function stepBudgetMs(step: CapabilityStep, options: BudgetOptions): number {
   const declared = step.execution?.timeoutMs;
   if (declared !== undefined) {
@@ -69,7 +102,7 @@ export function stepBudgetMs(step: CapabilityStep, options: BudgetOptions): numb
  * loop open.
  */
 export async function withDeadline<T>(operation: () => Promise<T>, timeoutMs: number): Promise<T> {
-  const bound = timeoutMs + OUTER_BOUND_GRACE_MS;
+  const bound = Math.max(timeoutMs * OUTER_BOUND_FACTOR, timeoutMs + OUTER_BOUND_GRACE_MS);
   let timer: NodeJS.Timeout | undefined;
 
   const guard = new Promise<never>((_resolve, reject) => {

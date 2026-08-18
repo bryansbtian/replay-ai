@@ -26,7 +26,10 @@ const SLUG_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
  */
 const PARAMETER_NAME_PATTERN = /^[a-z][A-Za-z0-9]*$/;
 
-/** Screaming snake case, the usual shape of a machine-readable outcome code. */
+/**
+ * Screaming snake case, the usual shape of a machine-readable code. Used for every code
+ * a capability declares: a known application state, and a recognized recovery.
+ */
 const OUTCOME_CODE_PATTERN = /^[A-Z][A-Z0-9_]*$/;
 
 export const capabilityIdSchema = z
@@ -44,7 +47,7 @@ export const parameterNameSchema = z
   .max(MAX_IDENTIFIER_LENGTH, `must be at most ${MAX_IDENTIFIER_LENGTH} characters`)
   .regex(PARAMETER_NAME_PATTERN, 'must be a camelCase name, for example "customerReference"');
 
-export const businessOutcomeCodeSchema = z
+export const declaredCodeSchema = z
   .string()
   .max(MAX_IDENTIFIER_LENGTH, `must be at most ${MAX_IDENTIFIER_LENGTH} characters`)
   .regex(OUTCOME_CODE_PATTERN, 'must be upper snake case, for example "CUSTOMER_NOT_FOUND"');

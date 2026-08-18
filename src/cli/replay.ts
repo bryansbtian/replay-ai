@@ -169,14 +169,15 @@ async function loadArtifact(
 export interface ReplayCommandDeps {
   readonly env: NodeJS.ProcessEnv;
   readonly stdout: (text: string) => void;
+  readonly stderr: (text: string) => void;
 }
 
 /**
  * Runs one replay and prints its structured result.
  *
- * The result is the whole output: it names the capability, the steps that completed,
- * and either the declared outputs or what failed and where. Invocation values never
- * appear in it.
+ * The result is the whole of stdout: it names the capability, the steps that completed,
+ * the conditions it recovered from, and either the declared outputs or what failed and
+ * where. Invocation values never appear in it, and neither do log lines.
  */
 export async function runReplayCommand(
   argv: readonly string[],
@@ -187,9 +188,12 @@ export async function runReplayCommand(
   const artifact = await loadArtifact(args.source, config.capabilitiesDir);
   const inputs = buildInvocationInputs(artifact, args.inputs);
 
+  // Run events go to stderr and the result goes to stdout, so `replay ... | jq` reads a
+  // single JSON document. Interleaving them would make the result unparseable exactly
+  // when a caller most wants to inspect it, which is on a failure.
   const logger = createLogger({
     level: config.logLevel,
-    write: (line) => deps.stdout(`${line}\n`),
+    write: (line) => deps.stderr(`${line}\n`),
   });
 
   const session = await launchPlaywrightSession({ headless: args.headless });

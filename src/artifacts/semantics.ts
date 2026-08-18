@@ -82,7 +82,32 @@ function uniquenessIssues(artifact: CapabilityArtifact): ArtifactIssue[] {
       (index) => `businessOutcomes[${index}].code`,
       (value) => `duplicate business outcome code "${value}"`,
     ),
+    ...duplicateIssues(
+      artifact.recoveries.map((recovery) => recovery.code),
+      (index) => `recoveries[${index}].code`,
+      (value) => `duplicate recovery code "${value}"`,
+    ),
+    ...declaredCodeCollisions(artifact),
   ];
+}
+
+/**
+ * A code that names both a state to report and a state to clear is a contradiction the
+ * engine would have to resolve at run time, so it is rejected while a person can fix it.
+ */
+function declaredCodeCollisions(artifact: CapabilityArtifact): ArtifactIssue[] {
+  const outcomeCodes = new Set(artifact.businessOutcomes.map((outcome) => outcome.code));
+  const issues: ArtifactIssue[] = [];
+  for (const [index, recovery] of artifact.recoveries.entries()) {
+    if (!outcomeCodes.has(recovery.code)) {
+      continue;
+    }
+    issues.push({
+      path: `recoveries[${index}].code`,
+      message: `code "${recovery.code}" is already declared as a business outcome`,
+    });
+  }
+  return issues;
 }
 
 function referenceIssues(artifact: CapabilityArtifact): ArtifactIssue[] {

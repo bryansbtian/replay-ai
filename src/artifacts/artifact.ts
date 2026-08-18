@@ -1,11 +1,7 @@
 import { z } from 'zod';
 
-import {
-  businessOutcomeCodeSchema,
-  capabilityIdSchema,
-  parameterNameSchema,
-} from './identifiers.js';
-import { capabilityStepSchema, checkpointSchema } from './steps.js';
+import { capabilityIdSchema, declaredCodeSchema, parameterNameSchema } from './identifiers.js';
+import { capabilityStepSchema, checkpointSchema, targetSchema } from './steps.js';
 
 /**
  * The capability artifact: the contract discovery writes and replay reads.
@@ -97,17 +93,73 @@ const outputDefinitionSchema = z.strictObject({
 });
 
 /**
- * An expected result of the business process, which is not the same thing as a broken
- * automation. "No customer matches that reference" is an answer; a missing button is a
- * failure. Declaring the known answers is what later lets a run end with a result
- * instead of an escalation.
+ * What a declared state means for the run that meets it.
  *
- * Detection is not implemented. Phase 3 only makes the artifact able to say it.
+ * Most declared states are answers: "no customer matches that reference" is a result the
+ * caller asked for, not a broken automation. A few are not. "You do not have permission
+ * to view this member" is a state the application is entitled to show and the automation
+ * is entitled to recognize, but it is not an answer to the question that was asked, and
+ * continuing past it is not something replay may decide to do.
+ *
+ * The distinction is declared rather than inferred, because only the capability's author
+ * knows which of its application's messages are answers. An engine that guessed would be
+ * classifying by string matching against page text, which is the one thing a stable code
+ * must never be derived from.
+ */
+export const OUTCOME_DISPOSITIONS = ['businessOutcome', 'failure'] as const;
+
+export type OutcomeDisposition = (typeof OUTCOME_DISPOSITIONS)[number];
+
+/**
+ * A state of the business process the capability recognizes on sight.
+ *
+ * The field is still called `businessOutcomes` because most entries are exactly that,
+ * and because it is the one list of declared application states: a second array for the
+ * states that happen to stop a run would be the same concept written twice, with two
+ * places to look when a code turns up in a result.
  */
 const businessOutcomeSchema = z.strictObject({
-  code: businessOutcomeCodeSchema,
+  code: declaredCodeSchema,
   description: descriptionSchema,
   condition: checkpointSchema,
+  disposition: z.enum(OUTCOME_DISPOSITIONS).default('businessOutcome'),
+});
+
+/** Recovery attempts are bounded by the same small ceiling that bounds step retries. */
+const MAX_RECOVERY_ATTEMPTS = 3;
+
+/**
+ * A runtime state the capability recognizes as transient, and the one interaction that
+ * clears it.
+ *
+ * This is deliberately not a workflow language. A recovery names a condition, a single
+ * control to activate, and how many times the pair may be applied; replay then retries
+ * the step that failed. Anything richer would be branching, and branching inside an
+ * artifact is where determinism and reviewability both go.
+ *
+ * Declaring recoveries is what keeps automatic dismissal safe. An engine that dismissed
+ * whatever dialog it found would eventually approve something, so only a control this
+ * list names is ever activated.
+ */
+const recoverySchema = z.strictObject({
+  code: declaredCodeSchema,
+  description: descriptionSchema,
+  /** How the state is recognized. The same condition model every checkpoint uses. */
+  condition: checkpointSchema,
+  action: z.strictObject({
+    /**
+     * Activate one declared control, then retry the step that failed. One kind, because
+     * one kind covers the states a capability can recognize today: an interstitial to
+     * acknowledge, and a prompt to re-run a request that did not land.
+     */
+    type: z.literal('dismiss'),
+    target: targetSchema,
+  }),
+  maxAttempts: z
+    .int()
+    .min(1, 'must be at least one attempt')
+    .max(MAX_RECOVERY_ATTEMPTS, `must be at most ${MAX_RECOVERY_ATTEMPTS} attempts`)
+    .default(1),
 });
 
 /**
@@ -154,6 +206,12 @@ export const capabilityArtifactSchema = z.strictObject({
    */
   successCondition: checkpointSchema,
   businessOutcomes: z.array(businessOutcomeSchema).default([]),
+  /**
+   * Runtime states this capability knows how to clear. Empty for a workflow that has
+   * never met one, which is the honest default: a recovery nobody has seen fire is a
+   * control being clicked for reasons no one can check.
+   */
+  recoveries: z.array(recoverySchema).default([]),
   metadata: metadataSchema,
 });
 
@@ -161,5 +219,7 @@ export type TargetApplication = z.infer<typeof targetApplicationSchema>;
 export type InputDefinition = z.infer<typeof inputDefinitionSchema>;
 export type OutputDefinition = z.infer<typeof outputDefinitionSchema>;
 export type BusinessOutcomeDefinition = z.infer<typeof businessOutcomeSchema>;
+export type RecoveryDefinition = z.infer<typeof recoverySchema>;
+export type RecoveryAction = RecoveryDefinition['action'];
 export type CapabilityMetadata = z.infer<typeof metadataSchema>;
 export type CapabilityArtifact = z.infer<typeof capabilityArtifactSchema>;

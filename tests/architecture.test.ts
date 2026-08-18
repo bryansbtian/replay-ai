@@ -70,6 +70,31 @@ describe('module boundaries', () => {
     expect(violations).toEqual([]);
   });
 
+  it('keeps every recovery path free of a model, which is what makes recovery deterministic', () => {
+    // Phase 5 added the only code in the system that reacts to a failure by doing
+    // something. If an LLM fallback were ever going to appear, it would appear here.
+    const recoveryPaths = [
+      join('src', 'replay', 'RecoveryPlanner.ts'),
+      join('src', 'replay', 'classification.ts'),
+      join('src', 'replay', 'ReplayEngine.ts'),
+    ];
+
+    const violations: string[] = [];
+    for (const file of recoveryPaths) {
+      for (const specifier of importsOf(file)) {
+        if (FORBIDDEN_IN_REPLAY.test(specifier)) {
+          violations.push(`${file} imports ${specifier}`);
+        }
+      }
+      const source = readFileSync(file, 'utf8');
+      if (/anthropic|claude|\bllm\b/i.test(source)) {
+        violations.push(`${file} mentions a model provider`);
+      }
+    }
+
+    expect(violations).toEqual([]);
+  });
+
   it('keeps replay off Playwright, so it drives whatever surface it is handed', () => {
     const violations: string[] = [];
     for (const file of sourceFiles(join('src', 'replay'))) {

@@ -29,11 +29,32 @@
         12345: { name: 'Ada Lovelace', balance: '5234.17' },
         67890: { name: 'Grace Hopper', balance: '118.05' },
         24680: { name: 'Alan Turing', balance: '$1,024.50' },
+        77777: { name: 'Katherine Johnson', balance: '9310.00' },
+        88888: { name: 'Radia Perlman', balance: '640.25' },
+      };
+
+      // The runtime states the console can show, each reachable from one member id so a
+      // test names a scenario by the value it supplies. Every one is deterministic: the
+      // same id always produces the same sequence of screens.
+      const MESSAGES = {
+        '00000': 'No Member Matches That Reference',
+        99999: 'You Do Not Have Permission To View This Member',
+        55555: 'Your Session Has Expired',
       };
 
       const form = document.getElementById('lookup-form');
       const input = document.getElementById('member-id');
       const slot = document.getElementById('result-slot');
+
+      // Ids whose first search lands in an interstitial and whose second search succeeds.
+      // Counting attempts rather than using a timer keeps the scenario deterministic: a
+      // clock would make the test depend on how loaded the machine is.
+      const attempts = {};
+
+      function attemptFor(reference) {
+        attempts[reference] = (attempts[reference] ?? 0) + 1;
+        return attempts[reference];
+      }
 
       function renderSummary(member) {
         const section = document.createElement('section');
@@ -52,11 +73,114 @@
         slot.appendChild(section);
       }
 
-      function renderNotFound() {
+      function renderMessage(text) {
         const message = document.createElement('p');
-        message.setAttribute('data-testid', 'member-error');
-        message.textContent = 'No Member Matches That Reference';
+        message.setAttribute('data-testid', 'member-message');
+        message.textContent = text;
         slot.appendChild(message);
+      }
+
+      /**
+       * An interstitial with one control. `onClear` decides what the console does once
+       * the control is used, which is how a known state clears and an unknown one does
+       * not have to.
+       */
+      function renderDialog(options) {
+        const dialog = document.createElement('section');
+        dialog.setAttribute('role', 'dialog');
+        dialog.setAttribute('aria-label', options.label);
+        dialog.setAttribute('data-testid', options.testId);
+        const heading = document.createElement('h2');
+        heading.textContent = options.label;
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.textContent = options.action;
+        button.setAttribute('data-testid', options.actionTestId);
+        button.addEventListener('click', () => {
+          dialog.remove();
+          options.onClear();
+        });
+        dialog.appendChild(heading);
+        dialog.appendChild(button);
+        slot.appendChild(dialog);
+      }
+
+      function renderSessionWarning(onClear) {
+        renderDialog({
+          label: 'Session Warning',
+          testId: 'session-warning',
+          action: 'Continue',
+          actionTestId: 'session-continue',
+          onClear,
+        });
+      }
+
+      function render(reference) {
+        const message = MESSAGES[reference];
+        if (message !== undefined) {
+          renderMessage(message);
+          return;
+        }
+
+        // 66666 answers with an interstitial nothing declares. Replay must stop rather
+        // than press a button it has never been told about.
+        if (reference === '66666') {
+          renderDialog({
+            label: 'Confirm Unusual Activity',
+            testId: 'unusual-activity',
+            action: 'Approve',
+            actionTestId: 'unusual-approve',
+            onClear: () => {
+              renderMessage('Approved');
+            },
+          });
+          return;
+        }
+
+        // 44444 shows the warning the capability knows, and shows it again every time it
+        // is acknowledged. The recovery is recognized, fires, and still gets nowhere,
+        // which is the state a bounded recovery has to be able to give up on.
+        if (reference === '44444') {
+          renderSessionWarning(() => {
+            render('44444');
+          });
+          return;
+        }
+
+        const member = MEMBERS[reference];
+        if (member === undefined) {
+          renderMessage(MESSAGES['00000']);
+          return;
+        }
+
+        // 77777 answers the first search with a session warning that the capability
+        // declares and knows how to acknowledge. Acknowledging it resumes the search,
+        // which is what makes retrying the wait step the right move afterwards.
+        if (reference === '77777' && attemptFor(reference) === 1) {
+          renderSessionWarning(() => {
+            renderSummary(member);
+          });
+          return;
+        }
+
+        // 88888 answers the first search with a request that never lands, and offers the
+        // control that re-runs it.
+        if (reference === '88888' && attemptFor(reference) === 1) {
+          renderMessage('Loading Member Record');
+          renderDialog({
+            label: 'Request Timed Out',
+            testId: 'load-timeout',
+            action: 'Retry Search',
+            actionTestId: 'load-retry',
+            onClear: () => {
+              slot.replaceChildren();
+              renderSummary(member);
+            },
+          });
+          return;
+        }
+
+        renderSummary(member);
       }
 
       form.addEventListener('submit', (event) => {
@@ -68,12 +192,7 @@
         // click was enough would read an empty page. The wait step is what makes it
         // correct, not a sleep.
         window.setTimeout(() => {
-          const member = MEMBERS[reference];
-          if (member === undefined) {
-            renderNotFound();
-            return;
-          }
-          renderSummary(member);
+          render(reference);
         }, 200);
       });
     </script>
