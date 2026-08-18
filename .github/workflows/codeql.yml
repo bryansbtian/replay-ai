@@ -1,0 +1,47 @@
+# Advanced CodeQL setup, used instead of GitHub's default setup because this
+# repository's settings require a committed, reviewable scanning configuration.
+#
+# Important: default setup and advanced setup cannot both be active. If code
+# scanning default setup is enabled under Settings > Code security, disable it,
+# or the analysis uploaded by this workflow is rejected.
+name: CodeQL
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Weekly, matching the Dependabot cadence, so new queries reach unchanged code.
+    - cron: '0 6 * * 1'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: codeql-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  analyze:
+    name: Analyze JavaScript and TypeScript
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v5
+
+      # build-mode: none is correct for JavaScript and TypeScript: CodeQL reads the
+      # sources directly, so no npm install or tsc run is needed here.
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v4
+        with:
+          languages: javascript-typescript
+          build-mode: none
+
+      - name: Analyze
+        uses: github/codeql-action/analyze@v4
+        with:
+          category: '/language:javascript-typescript'

@@ -1,0 +1,25 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+*.tsbuildinfo
+
+# Test and coverage output
+coverage/
+playwright-report/
+test-results/
+.vitest/
+
+# Environment: .env.example is the only env file that may be committed
+.env
+.env.*
+!.env.example
+
+# Editor and OS noise
+.DS_Store
+.idea/
+.vscode/
+
+# Note: capabilities/ and evidence/ are intentionally NOT ignored.
+# Example capability artifacts and run evidence are project deliverables.

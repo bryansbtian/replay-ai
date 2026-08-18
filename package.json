@@ -1,0 +1,43 @@
+{
+  "name": "replay-ai",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Computer-use automation that discovers a UI workflow with an LLM once, then replays it deterministically without one.",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "dev": "tsx watch --env-file-if-exists=.env src/cli/main.ts",
+    "lint": "eslint . --max-warnings=0",
+    "lint:fix": "eslint . --fix",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "test:e2e": "playwright test --pass-with-no-tests",
+    "audit": "npm audit --audit-level=high"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.117.1",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@playwright/test": "^1.62.1",
+    "@types/node": "^24.10.1",
+    "@vitest/coverage-v8": "^4.1.10",
+    "eslint": "^10.8.1",
+    "eslint-config-prettier": "^10.1.8",
+    "eslint-plugin-import-x": "^4.17.1",
+    "prettier": "^3.9.6",
+    "tsx": "^4.23.12",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.67.0",
+    "vitest": "^4.1.10"
+  }
+}
