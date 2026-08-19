@@ -1,6 +1,6 @@
 import type { Observation } from '../surfaces/index.js';
 
-import type { DiscoveredValue } from './DiscoveryTrace.js';
+import type { DiscoveredValue, DiscoveryInput } from './DiscoveryTrace.js';
 
 /**
  * Everything the model is told, in one place.
@@ -42,7 +42,7 @@ Type into a field:
 {"type":"action","action":{"type":"fill","target":{"description":"Member ID Field","strategies":[{"kind":"label","text":"Member ID"},{"kind":"placeholder","text":"Enter A Member ID"}]},"value":"12345"},"summary":"Enter the member reference"}
 
 Read a value the goal asks for:
-{"type":"action","action":{"type":"extract","target":{"description":"Savings Balance","strategies":[{"kind":"text","text":"Savings Balance"}]},"name":"savingsBalance"},"summary":"Read the savings balance"}
+{"type":"action","action":{"type":"extract","target":{"description":"Savings Balance","strategies":[{"kind":"attribute","attribute":"data-field","value":"savings-balance"}]},"name":"savingsBalance"},"summary":"Read the savings balance"}
 
 Wait for a state to arrive:
 {"type":"action","action":{"type":"wait","condition":{"type":"textVisible","text":"Member Summary"}},"summary":"Wait for the member summary to load"}
@@ -73,6 +73,7 @@ Rules:
 - If the value the goal asks for is already visible in the observation text, you may report it directly in a complete decision. Extracting it again is not required.
 - If an action fails, do not repeat it unchanged. Target the control a different way, or take a different route to the goal. The same action failing three times ends the run.
 - Give a target more than one strategy when the observation supports it, so a control that one strategy misses is still found.
+- To extract a printed value such as a balance, target it with the attribute strategy listed under Readable Values. A heading near the value is not the value, and text strategies match the label rather than what it labels.
 - Stay inside the application you were given. Do not navigate to an unrelated site.
 - Do not claim the goal is complete unless the current observation shows it. If you cannot see the result, keep working or escalate.
 - As soon as you have everything the goal asked for, answer with complete. Anything listed under Values Read So Far you already have; do not read it again.
@@ -100,6 +101,15 @@ export interface InstructionInput {
   /** Most recent last. The caller decides how many; see `MAX_HISTORY_ENTRIES`. */
   readonly history: readonly StepHistoryEntry[];
   readonly discovered: readonly DiscoveredValue[];
+  /**
+   * The values this run was given, if any.
+   *
+   * Shown so the run types exactly what it was handed rather than a value read out of the
+   * goal's prose. Compilation later binds a filled value to an input by exact match, so a
+   * model that improvised an equivalent-looking string would produce a workflow that
+   * cannot be parameterized.
+   */
+  readonly inputs: readonly DiscoveryInput[];
   /**
    * Whether this screen is the one the previous action left behind unchanged.
    *
@@ -134,6 +144,25 @@ function renderControls(observation: Observation): string {
     .join('\n');
 }
 
+/**
+ * The values on the page that can be addressed by a stable attribute.
+ *
+ * Listed separately from the controls because they are a different kind of thing: not
+ * something to operate, but the only reliable way to target a printed value such as a
+ * balance, which has no role and no accessible name.
+ */
+function renderValues(observation: Observation): string {
+  if (observation.values.length === 0) {
+    return '  (No Addressable Values Were Detected)';
+  }
+  return observation.values
+    .map(
+      (value) =>
+        `  - {"kind":"attribute","attribute":"${value.attribute}","value":"${value.name}"}`,
+    )
+    .join('\n');
+}
+
 function renderHistory(history: readonly StepHistoryEntry[]): string {
   if (history.length === 0) {
     return '  (Nothing Yet)';
@@ -144,6 +173,26 @@ function renderHistory(history: readonly StepHistoryEntry[]): string {
         return `  ${entry.step}. ${entry.summary} -> ${entry.outcome}`;
       }
       return `  ${entry.step}. ${entry.summary} -> ${entry.outcome}: ${entry.detail}`;
+    })
+    .join('\n');
+}
+
+/**
+ * The values the run was given, exactly as they must be typed.
+ *
+ * A sensitive value is named and not shown. Nothing in the current workflow needs one,
+ * and a prompt is the last place a secret should be pasted into by default.
+ */
+function renderInputs(inputs: readonly DiscoveryInput[]): string {
+  if (inputs.length === 0) {
+    return '  (None Supplied)';
+  }
+  return inputs
+    .map((input) => {
+      if (input.sensitive === true) {
+        return `  - ${input.name} (supplied, not shown)`;
+      }
+      return `  - ${input.name} = ${input.value}`;
     })
     .join('\n');
 }
@@ -175,6 +224,9 @@ export function buildInstruction(input: InstructionInput): string {
     'Recent Steps:',
     renderHistory(input.history),
     '',
+    'Values To Use:',
+    renderInputs(input.inputs),
+    '',
     'Values Read So Far:',
     renderDiscovered(input.discovered),
     '',
@@ -183,6 +235,8 @@ export function buildInstruction(input: InstructionInput): string {
     `  Title: ${input.observation.title}`,
     '  Controls:',
     renderControls(input.observation),
+    '  Readable Values:',
+    renderValues(input.observation),
     '  Visible Text:',
     `${text}`,
   ];

@@ -1,0 +1,19 @@
+{"timestamp":"2026-08-19T14:00:22.106Z","runId":"73fc960c-45a4-4e66-9c32-86d7f9414c5d","event":"run_started","capabilityId":"lookup-member-balance","capabilityVersion":1,"capabilityName":"Lookup Member Balance","inputNames":["memberId"],"policy":{"allowedHosts":["127.0.0.1:3100"],"allowedSchemes":["http"],"allowedRoutes":[],"allowedActions":["navigate","click","fill","extract","wait","checkpoint"],"riskPolicy":{"safe":"allow","risky":"requireConfirmation","irreversible":"block"}}}
+{"timestamp":"2026-08-19T14:00:22.223Z","runId":"73fc960c-45a4-4e66-9c32-86d7f9414c5d","event":"step_started","stepId":"open-demo-member-lookup","stepType":"navigate","budgetMs":15000}
+{"timestamp":"2026-08-19T14:00:22.274Z","runId":"73fc960c-45a4-4e66-9c32-86d7f9414c5d","event":"policy_evaluated","stepId":"open-demo-member-lookup","actionType":"navigate","outcome":"allow"}
+{"timestamp":"2026-08-19T14:00:22.275Z","runId":"73fc960c-45a4-4e66-9c32-86d7f9414c5d","event":"step_completed","stepId":"open-demo-member-lookup","stepType":"navigate","attempts":1,"durationMs":50}
+{"timestamp":"2026-08-19T14:00:22.276Z","runId":"73fc960c-45a4-4e66-9c32-86d7f9414c5d","event":"step_started","stepId":"enter-member-id","stepType":"fill","budgetMs":15000}
+{"timestamp":"2026-08-19T14:00:22.306Z","runId":"73fc960c-45a4-4e66-9c32-86d7f9414c5d","event":"policy_evaluated","stepId":"enter-member-id","actionType":"fill","outcome":"allow"}
+{"timestamp":"2026-08-19T14:00:22.307Z","runId":"73fc960c-45a4-4e66-9c32-86d7f9414c5d","event":"step_completed","stepId":"enter-member-id","stepType":"fill","attempts":1,"durationMs":30}
+{"timestamp":"2026-08-19T14:00:22.307Z","runId":"73fc960c-45a4-4e66-9c32-86d7f9414c5d","event":"step_started","stepId":"click-search","stepType":"click","budgetMs":15000}
+{"timestamp":"2026-08-19T14:00:22.355Z","runId":"73fc960c-45a4-4e66-9c32-86d7f9414c5d","event":"policy_evaluated","stepId":"click-search","actionType":"click","outcome":"allow"}
+{"timestamp":"2026-08-19T14:00:22.355Z","runId":"73fc960c-45a4-4e66-9c32-86d7f9414c5d","event":"step_completed","stepId":"click-search","stepType":"click","attempts":1,"durationMs":48}
+{"timestamp":"2026-08-19T14:00:22.355Z","runId":"73fc960c-45a4-4e66-9c32-86d7f9414c5d","event":"step_started","stepId":"await-member-search-results","stepType":"wait","budgetMs":5000}
+{"timestamp":"2026-08-19T14:00:22.359Z","runId":"73fc960c-45a4-4e66-9c32-86d7f9414c5d","event":"checkpoint_passed","stepId":"await-member-search-results","checkpointType":"targetVisible","expected":"Target \"Member Search Results\" Is Visible","durationMs":4}
+{"timestamp":"2026-08-19T14:00:22.360Z","runId":"73fc960c-45a4-4e66-9c32-86d7f9414c5d","event":"policy_evaluated","stepId":"await-member-search-results","actionType":"wait","outcome":"allow"}
+{"timestamp":"2026-08-19T14:00:22.360Z","runId":"73fc960c-45a4-4e66-9c32-86d7f9414c5d","event":"step_completed","stepId":"await-member-search-results","stepType":"wait","attempts":1,"durationMs":4}
+{"timestamp":"2026-08-19T14:00:22.360Z","runId":"73fc960c-45a4-4e66-9c32-86d7f9414c5d","event":"step_started","stepId":"read-savings-balance","stepType":"extract","budgetMs":15000}
+{"timestamp":"2026-08-19T14:00:22.561Z","runId":"73fc960c-45a4-4e66-9c32-86d7f9414c5d","event":"policy_evaluated","stepId":"read-savings-balance","actionType":"extract","outcome":"allow"}
+{"timestamp":"2026-08-19T14:00:22.561Z","runId":"73fc960c-45a4-4e66-9c32-86d7f9414c5d","event":"step_completed","stepId":"read-savings-balance","stepType":"extract","attempts":1,"durationMs":200}
+{"timestamp":"2026-08-19T14:00:22.563Z","runId":"73fc960c-45a4-4e66-9c32-86d7f9414c5d","event":"checkpoint_passed","stepId":"successCondition","checkpointType":"targetVisible","expected":"Target \"Member Summary\" Is Visible","durationMs":2}
+{"timestamp":"2026-08-19T14:00:22.602Z","runId":"73fc960c-45a4-4e66-9c32-86d7f9414c5d","event":"run_completed","status":"success","durationMs":341}

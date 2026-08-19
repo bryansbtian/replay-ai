@@ -1,4 +1,4 @@
-import type { DiscoveryTraceEntry } from './DiscoveryTrace.js';
+import type { DiscoveryTrace } from './DiscoveryTrace.js';
 
 /**
  * What a discovery run hands back.
@@ -57,10 +57,10 @@ interface DiscoveryResultBase {
   readonly stepCount: number;
   readonly durationMs: number;
   /**
-   * The ordered record of the run. In-memory only: it carries the values the run typed
-   * into the application, so it is never serialized into evidence or printed.
+   * The record of the run, and Phase 8's input. In-memory only: it carries the values the
+   * run typed into the application, so it is never serialized into evidence or printed.
    */
-  readonly trace: readonly DiscoveryTraceEntry[];
+  readonly trace: DiscoveryTrace;
 }
 
 /**

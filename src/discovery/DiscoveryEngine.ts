@@ -35,6 +35,8 @@ import {
   summarizeObservation,
   type ActionOutcome,
   type DiscoveredValue,
+  type DiscoveryInput,
+  type DiscoveryTrace,
   type DiscoveryTraceEntry,
 } from './DiscoveryTrace.js';
 import { DEFAULT_LOOP_LIMITS, LoopGuard, type LoopLimits, type LoopStop } from './LoopGuard.js';
@@ -89,6 +91,16 @@ export interface TargetApplication {
 export interface DiscoveryRequest {
   readonly goal: string;
   readonly target: TargetApplication;
+  /**
+   * The values this run should use, each under the name it will carry as a capability
+   * input.
+   *
+   * Optional, because discovery works without them: a goal naming a reference in prose is
+   * enough for a model to type it. What they add is the ability to compile the run
+   * afterwards. A finished trace cannot say which of the strings in it were invocation
+   * data, and a compiler that guessed would eventually parameterize a workflow constant.
+   */
+  readonly inputs?: readonly DiscoveryInput[];
 }
 
 export interface DiscoveryEngineOptions {
@@ -265,6 +277,7 @@ export class DiscoveryEngine {
         observation,
         history: history.slice(-MAX_HISTORY_ENTRIES),
         discovered,
+        inputs: request.inputs ?? [],
         stateUnchanged,
         guard,
       });
@@ -389,6 +402,7 @@ export class DiscoveryEngine {
         observation: input.observation,
         history: input.history,
         discovered: input.discovered,
+        inputs: input.inputs,
         stateUnchanged: input.stateUnchanged,
         ...(rejection !== undefined && { rejection }),
       });
@@ -611,11 +625,37 @@ export class DiscoveryEngine {
       target: context.target,
       stepCount: trace.length,
       durationMs: context.guard.elapsedMs(),
-      trace,
+      trace: this.traceOf(context, outputs),
       outputs,
       summary: decision.summary,
     };
     return success;
+  }
+
+  /**
+   * The run as Phase 8 receives it.
+   *
+   * Assembled here rather than accumulated, because everything in it is already known:
+   * the entries are the loop's own record, and the goal, application, and inputs are what
+   * the caller asked for. The entry point is the real URL rather than the sanitized one a
+   * result reports, because a compiled capability has to be able to navigate to it.
+   */
+  private traceOf(
+    context: RunContext,
+    outputs: Readonly<Record<string, string>> = {},
+  ): DiscoveryTrace {
+    return {
+      runId: this.runId,
+      goal: context.request.goal,
+      application: {
+        name: context.request.target.name,
+        entryPoint: context.request.target.entryPoint,
+      },
+      inputs: context.request.inputs ?? [],
+      entries: context.trace,
+      discovered: context.discovered,
+      outputs,
+    };
   }
 
   private async denied(
@@ -659,7 +699,7 @@ export class DiscoveryEngine {
       target: context.target,
       stepCount: context.trace.length,
       durationMs: context.guard.elapsedMs(),
-      trace: context.trace,
+      trace: this.traceOf(context),
       reason,
       source,
       ...(lastAction !== undefined && { lastAction }),
@@ -696,7 +736,7 @@ export class DiscoveryEngine {
       target: context.target,
       stepCount: context.trace.length,
       durationMs: context.guard.elapsedMs(),
-      trace: context.trace,
+      trace: this.traceOf(context),
       kind: detail.kind,
       code: detail.code,
       message: detail.message,
@@ -731,6 +771,7 @@ interface DecisionInput {
   readonly observation: Observation;
   readonly history: readonly StepHistoryEntry[];
   readonly discovered: readonly DiscoveredValue[];
+  readonly inputs: readonly DiscoveryInput[];
   readonly stateUnchanged: boolean;
   readonly guard: LoopGuard;
 }

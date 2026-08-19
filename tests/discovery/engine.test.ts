@@ -526,7 +526,7 @@ describe('stopping conditions', () => {
       return;
     }
     expect(result.code).toBe('DISCOVERY_COMPLETION_UNVERIFIED');
-    expect(result.trace[0]?.outcome.code).toBe('EXTRACTION_EMPTY');
+    expect(result.trace.entries[0]?.outcome.code).toBe('EXTRACTION_EMPTY');
   });
 
   it('stops when proposed actions keep failing to be carried out', async () => {
@@ -601,7 +601,7 @@ describe('escalation', () => {
     expect(result.reason).toContain('approve a transfer');
     // The run is still described in full, which is what Phase 9 will hand to a person.
     expect(result.stepCount).toBe(1);
-    expect(result.trace).toHaveLength(1);
+    expect(result.trace.entries).toHaveLength(1);
   });
 });
 

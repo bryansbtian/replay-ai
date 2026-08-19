@@ -49,6 +49,8 @@ export {
   summarizeObservation,
   type ActionOutcome,
   type DiscoveredValue,
+  type DiscoveryInput,
+  type DiscoveryTrace,
   type DiscoveryTraceEntry,
   type ObservationSummary,
 } from './DiscoveryTrace.js';

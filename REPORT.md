@@ -240,6 +240,27 @@ also be a `CapabilityStepType`, because policy evaluates the latter; if an actio
 added that the guardrail had no name for, the constraint would stop compiling rather than
 let an action through a check that could not describe it.
 
+## Why Compilation Is Its Own Boundary
+
+A discovery trace and a capability artifact answer different questions. The trace says what
+happened during one run, in the order it happened, including the attempts that failed and
+the concrete values that were typed. The artifact says how the capability is performed, for
+every future caller. Serializing the first and calling it the second would produce a file
+that looks like a workflow and replays one member's lookup forever.
+
+So compilation is a real transformation with its own module, and it is deterministic. The
+same trace and the same request produce the same artifact byte for byte, and no model is
+involved: an ESLint rule and an architecture test both refuse an SDK import under
+`src/compilation/`. That matters because the project's claim is that reasoning is a
+one-time cost. A compiler that called a model would put one back between the run and the
+artifact, and the artifact would stop being reproducible from its inputs.
+
+The dependency direction is the other half of it. Compilation imports replay, because it
+verifies by replaying. Replay imports nothing from compilation, discovery, or the model
+layer, so the executor never learns how a workflow was authored. That rule is enforced
+twice, by lint and by test, and it is what lets a capability be handed to a replay engine
+that has never heard of a model.
+
 ## How Observations Are Represented
 
 An observation is a bounded summary: URL, title, collapsed visible text, and the
@@ -418,6 +439,49 @@ jitter, and no per-error-class policy. A step that cannot succeed in a few attem
 workflow that has changed, which is an escalation rather than something to retry harder.
 Operational policy belongs to the engine and its configuration, not to a document that
 gets committed once and read for months.
+
+## How A Discovered Value Becomes A Parameter
+
+Discovery types concrete strings, and a finished trace cannot say which of them were
+invocation data. Inferring it from the shape of a string finds the value the caller meant
+and eventually also finds one they did not, and a wrongly parameterized workflow constant
+is a capability that breaks the first time it is invoked for real.
+
+So the grounding is explicit. The caller names the values with `--input memberId=12345`,
+discovery is shown them so it types exactly those, and the compiler binds on exact
+whole-value equality. Everything else stays a literal, which is the right answer for the
+parts of a workflow that never vary. Two inputs sharing a value is a compilation failure
+rather than a coin flip, and so is an input the run never typed.
+
+The supplied value never reaches the artifact. Only the name does, which is what keeps a
+member reference out of a file that gets committed and reviewed.
+
+## Why An Output Is An Instruction
+
+The artifact stores an extract step and a declared output, never the value the discovery
+run read. An artifact carrying `"5234.17"` would return one member's balance to everybody,
+and it would be a value in a repository.
+
+Output types stay `string`. The surface reads text and nothing in replay parses a currency
+string into a number, so declaring `number` would be a promise the engine cannot keep. The
+demo application renders one member's balance as `$1,024.50` and another's as `118.05`, and
+both come back exactly as shown.
+
+## How A Success Condition Is Generated
+
+The condition has to prove the run arrived somewhere, and the run produced the evidence for
+that itself: the controls that were on the last screen and not on the first. A heading or a
+region is preferred, because that is what an application uses to name the thing it just
+showed you, which makes the condition read like the goal rather than like the last button
+pressed. A run that ends on the screen it started from has no such evidence, and is a
+compilation failure rather than a capability whose success condition cannot fail.
+
+## What The Artifact Cannot Carry
+
+The strict schema is the real protection. There is no free-form metadata object, so there
+is no field a prompt, a transcript, a reasoning trace, or a captured form value could live
+in; adding one fails validation. The regression test that greps a compiled artifact for
+those words is the net under that, not the mechanism.
 
 ## What Replay Proved About The Schema
 
@@ -911,6 +975,34 @@ The gap is honest and documented: a goal that reads nothing and changes nothing 
 on the strength of the summary plus the fact that work happened, because there is no
 goal-specific condition to check it against until Phase 8 compiles one.
 
+## Why Verification Gates Persistence
+
+A compiled artifact is a hypothesis. It is well-formed, it validates, and none of that says
+the workflow runs. So a capability is saved only after the real replay engine has executed
+it against the live application through the real policy engine, with the values discovery
+used. There is no easier verification path, because the question is whether the artifact
+works the way production replay will run it.
+
+The order matters as much as the check. Compile, validate, replay, then save. The
+alternative, save and then verify and maybe delete, puts an unproven capability in the store
+for a window during which something could invoke it, and leaves a broken one behind whenever
+the delete is the step that fails.
+
+Verification asks two questions, and the second one was added because the first is not
+enough. A replay that succeeds proves the workflow ran. It does not prove the capability
+reads the right thing: an extract step can resolve, return text, and satisfy every
+condition while addressing the heading above a balance rather than the balance. That
+capability replays perfectly and answers the wrong question. The discovery run already
+checked its own reported values against what the application was showing, so those are the
+reference, and a mismatch is a rejection. Only the output names appear in the message,
+never the values.
+
+Finding that case is what produced the one surface change in this phase. A printed balance
+has no role and no accessible name, so an accessibility snapshot cannot describe it and a
+workflow that reads one could be discovered but not written down. The observation now also
+lists the elements carrying a stable attribute such as `data-field`, by attribute and value
+and never by content, which gives such a value something a locator can hold on to.
+
 ## What Is Deferred
 
 To Phase 9:
@@ -938,6 +1030,18 @@ Later, and out of scope on purpose:
 
 Multi-tenancy remains out of scope: there is no tenancy plumbing, no database, and no
 queues. What Phase 3 added is the room for it, at the cost of one nested object.
+
+Compilation strengthens the reuse story without adding any of that. A compiled capability
+names no model, no provider, and no browser: it is targets, values, conditions, and step
+types, all of them surface-neutral by construction, and an architecture test refuses a
+Playwright or SDK import in the module that produces it. So the artifact a run against a
+Chromium page produces is expressed in terms a different surface implementation could
+resolve, and the deployment that replays it needs neither an account nor a credential.
+
+The same property is what a future tenant variant would build on. Two tenants running
+different builds of the same application differ in their locators and their entry point,
+both of which live in the artifact rather than in the engine, so the variation is data. It
+is not implemented, and nothing here pretends otherwise.
 
 Heterogeneous surfaces are handled by the surface contract, as before: an artifact stores
 surface-neutral targets, so a workflow recorded through one surface is expressed in a
@@ -1183,6 +1287,29 @@ in the field name, because the shared redaction rule replaces any field whose na
 credential-bearing and a count is not one. Renaming the field was the right fix; loosening
 the rule was not.
 
+## A Generated Capability Grants Itself Nothing
+
+A capability that came out of a successful discovery run has earned no privileges. Its
+verification replay is evaluated by the same policy engine, asked the same questions, and
+refused on the same terms as any other run. A test drives exactly that: under a read-only
+policy the compiled workflow is rejected and the fill never reaches the surface.
+
+The `risk` the compiler writes is a description, derived from the step type rather than
+taken from anything the model said. Policy decides what happens to a step at that risk, and
+an artifact declaring `safe` gains nothing it would not have had by staying silent.
+
+## Sensitive Values Become Parameters
+
+The reason parameterization is a safety property and not only a reuse one: the value that
+would otherwise be baked into a committed file is a member reference, a customer number, or
+worse. Compilation lifts it out by name, so the artifact carries `memberId` and the value
+travels per invocation. An input declared sensitive is marked as such in the artifact, which
+is the declaration the logging and evidence layers already act on.
+
+The artifact is checked for this directly. A compiled capability is asserted not to contain
+the value discovery typed, nor the value discovery read, nor any of the words a provider
+transcript would arrive under.
+
 ## Two Kinds Of Test, And Why Neither Needs A Key
 
 The whole automated suite mocks the `LLMClient` boundary and nothing below it. The policy
@@ -1256,11 +1383,21 @@ Deliberate omissions so far, with the reasoning:
   than by a general layering tool that would need more configuration than it earns.
 - **No premature abstractions.** Directories that later phases will fill contain a README
   stating their responsibility and allowed dependencies, and no placeholder interfaces.
-- **No artifact compilation from a discovery trace.** Phase 7 stops at a successful,
-  evidenced run. Turning one into a capability means normalizing the steps that worked,
-  deciding which typed values become inputs, generating a success checkpoint, and proving
-  the result replays. Each of those is a decision worth making deliberately, and serializing
-  the trace would have produced an artifact that looked right and replayed by luck.
+- **No inferred business outcomes.** The compiler carries through the declared application
+  states it is given and invents none. Only the person recording a capability knows which of
+  an application's messages are answers and which are failures, and a compiler that guessed
+  would be deriving a stable code by matching page text, which is the one thing a code must
+  never come from. A generated capability therefore starts with none, and an unknown member
+  is a hard failure until somebody declares that outcome.
+- **No capability version history.** A newly compiled capability is version 1. An id that is
+  already taken is refused unless `--overwrite` is passed. Version bumping, diffing a
+  re-recorded workflow against its predecessor, and migrating callers are all real problems
+  and none of them is this phase's.
+- **No second-input verification.** The verification replay uses the values discovery used,
+  which is what proves the run was converted faithfully. Reuse with a different input is
+  demonstrated by the end-to-end test and by hand rather than required before saving, since
+  a capability whose second input the fixture cannot supply would be unsavable for a reason
+  that has nothing to do with the workflow.
 - **No human handoff.** A run that needs a person returns a structured escalation and stops.
   Nothing pauses, holds, or transfers a session.
 - **No screenshots during discovery.** The observation is text and structure. An image per

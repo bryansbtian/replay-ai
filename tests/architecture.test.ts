@@ -173,6 +173,50 @@ describe('module boundaries', () => {
     }
   });
 
+  it('keeps compilation deterministic, with no model anywhere in it', () => {
+    // The project's claim is that a model discovers a workflow once and deterministic code
+    // executes it forever after. A compiler that called a model would put one back in the
+    // path between the run and the artifact, and the artifact would stop being reproducible
+    // from its inputs.
+    const violations: string[] = [];
+    for (const file of sourceFiles(join('src', 'compilation'))) {
+      for (const specifier of importsOf(file)) {
+        if (/(^|\/)llm(\/|$)/.test(specifier) || specifier.startsWith('@anthropic-ai/')) {
+          violations.push(`${file} imports ${specifier}`);
+        }
+        if (PLAYWRIGHT_PATTERN.test(specifier)) {
+          violations.push(`${file} imports ${specifier}`);
+        }
+      }
+    }
+
+    expect(violations).toEqual([]);
+  });
+
+  it('lets compilation reach the application only through the surface contract', () => {
+    const specifiers = sourceFiles(join('src', 'compilation')).flatMap(importsOf);
+    const surfaceImports = new Set(
+      specifiers.filter((specifier) => specifier.includes('surfaces')),
+    );
+
+    expect([...surfaceImports]).toEqual(['../surfaces/index.js']);
+  });
+
+  it('keeps replay independent of the compiler that produces its artifacts', () => {
+    // Replay reads validated artifacts and does not know where one came from. A dependency
+    // the other way would make the executor care how a workflow was authored.
+    const violations: string[] = [];
+    for (const file of sourceFiles(join('src', 'replay'))) {
+      for (const specifier of importsOf(file)) {
+        if (/(^|\/)compilation(\/|$)/.test(specifier)) {
+          violations.push(`${file} imports ${specifier}`);
+        }
+      }
+    }
+
+    expect(violations).toEqual([]);
+  });
+
   it('keeps discovery on the generic model boundary rather than on a provider', () => {
     // The whole point of `LLMClient` is that the loop cannot tell which provider answered.
     // A direct import of either implementation would quietly undo that, so the check is on

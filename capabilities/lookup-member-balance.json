@@ -1,0 +1,129 @@
+{
+  "schemaVersion": "1",
+  "id": "lookup-member-balance",
+  "name": "Lookup Member Balance",
+  "description": "Looks up a demo member by reference and reads their savings balance.",
+  "version": 1,
+  "application": {
+    "name": "Demo Member Lookup",
+    "entryPoint": "http://127.0.0.1:3100/member-lookup.html"
+  },
+  "inputs": [
+    {
+      "name": "memberId",
+      "type": "string",
+      "required": true,
+      "description": "Value supplied for memberId.",
+      "sensitive": false
+    }
+  ],
+  "outputs": [
+    {
+      "name": "savingsBalance",
+      "type": "string",
+      "description": "Value read from the application as savingsBalance."
+    }
+  ],
+  "steps": [
+    {
+      "id": "open-demo-member-lookup",
+      "type": "navigate",
+      "url": "http://127.0.0.1:3100/member-lookup.html",
+      "risk": "safe"
+    },
+    {
+      "id": "enter-member-id",
+      "type": "fill",
+      "target": {
+        "description": "Member ID Field",
+        "strategies": [
+          {
+            "kind": "label",
+            "text": "Member ID"
+          },
+          {
+            "kind": "placeholder",
+            "text": "Enter A Member ID"
+          },
+          {
+            "kind": "attribute",
+            "attribute": "data-testid",
+            "value": "member-id"
+          }
+        ]
+      },
+      "value": {
+        "source": "input",
+        "name": "memberId"
+      },
+      "risk": "safe"
+    },
+    {
+      "id": "click-search",
+      "type": "click",
+      "target": {
+        "description": "Search Button",
+        "strategies": [
+          {
+            "kind": "role",
+            "role": "button",
+            "name": "Search"
+          }
+        ]
+      },
+      "risk": "safe"
+    },
+    {
+      "id": "await-member-search-results",
+      "type": "wait",
+      "condition": {
+        "type": "targetVisible",
+        "target": {
+          "description": "Member Search Results",
+          "strategies": [
+            {
+              "kind": "attribute",
+              "attribute": "data-testid",
+              "value": "member-search"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "read-savings-balance",
+      "type": "extract",
+      "target": {
+        "description": "Savings Balance",
+        "strategies": [
+          {
+            "kind": "attribute",
+            "attribute": "data-field",
+            "value": "savings-balance"
+          }
+        ]
+      },
+      "output": "savingsBalance"
+    }
+  ],
+  "successCondition": {
+    "type": "targetVisible",
+    "target": {
+      "description": "Member Summary",
+      "strategies": [
+        {
+          "kind": "role",
+          "role": "region",
+          "name": "Member Summary"
+        }
+      ]
+    }
+  },
+  "businessOutcomes": [],
+  "recoveries": [],
+  "metadata": {
+    "createdAt": "2026-08-19T14:00:05.487Z",
+    "updatedAt": "2026-08-19T14:00:05.487Z",
+    "tags": []
+  }
+}

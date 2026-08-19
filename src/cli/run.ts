@@ -92,8 +92,14 @@ async function replayCommand(argv: readonly string[], deps: CliDeps): Promise<nu
 
 /** Maps a discovery outcome onto an exit code, see `EXIT_ESCALATION_REQUIRED`. */
 async function discoverCommand(argv: readonly string[], deps: CliDeps): Promise<number> {
-  const result = await runDiscoverCommand(argv, deps);
+  const { discovery: result, compilation } = await runDiscoverCommand(argv, deps);
   if (result.status === 'success') {
+    // A run that discovered the workflow and then failed to produce a usable capability
+    // did not do what it was asked to do, so it does not report success.
+    if (compilation !== undefined && compilation.status !== 'compiled') {
+      deps.stderr(`${compilation.code}: ${compilation.message}\n`);
+      return EXIT_ERROR;
+    }
     return EXIT_OK;
   }
   if (result.status === 'escalation') {
