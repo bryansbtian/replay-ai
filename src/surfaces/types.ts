@@ -187,6 +187,26 @@ export interface ObservedControl {
 }
 
 /**
+ * A value on screen that is not a control, and the stable attribute that finds it.
+ *
+ * Accessible roles and names describe things a person operates. They do not describe a
+ * balance printed in a paragraph, which has no role, no accessible name, and nothing a
+ * semantic locator can hold on to. Without this, a workflow can be discovered that reads
+ * such a value and cannot be written down: the only targets available would be the
+ * heading above it or the text of the value itself, and both read the wrong thing on the
+ * next invocation.
+ *
+ * Only attributes a team has committed to keeping stable are listed, and the attribute
+ * rather than the content is what makes the value addressable.
+ */
+export interface ObservedValue {
+  /** The attribute that identifies it, such as `data-field`. */
+  readonly attribute: string;
+  /** The attribute's value, which is what a locator matches on. */
+  readonly name: string;
+}
+
+/**
  * A bounded snapshot of the surface.
  *
  * Deliberately a summary rather than a dump: it is written to evidence on every step,
@@ -201,6 +221,13 @@ export interface Observation {
   readonly textSummary: string;
   readonly truncated: boolean;
   readonly controls: readonly ObservedControl[];
+  /**
+   * Readable values on the page, by the stable attribute that addresses them.
+   *
+   * Never their content: what is on screen is already in `textSummary`, and repeating it
+   * here would put somebody's balance in a second place for no gain.
+   */
+  readonly values: readonly ObservedValue[];
   readonly durationMs: number;
 }
 

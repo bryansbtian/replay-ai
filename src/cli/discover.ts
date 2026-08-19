@@ -1,18 +1,23 @@
 import { randomUUID } from 'node:crypto';
 import { relative } from 'node:path';
 
+import { FileArtifactStore } from '../artifacts/index.js';
+import { ArtifactCompiler, type CompilationResult } from '../compilation/index.js';
 import { loadConfig, type AppConfig } from '../config/index.js';
 import {
   DEFAULT_LOOP_LIMITS,
   DiscoveryEngine,
   describeAction,
+  type DiscoveryInput,
   type DiscoveryResult,
+  type DiscoverySuccess,
   type DiscoveryTraceEntry,
 } from '../discovery/index.js';
 import { ReplayAiError } from '../errors.js';
 import { FileEvidenceRecorder } from '../evidence/index.js';
-import { createLogger } from '../logging/logger.js';
+import { createLogger, type Logger } from '../logging/logger.js';
 import { StaticPolicyEngine, summarizePolicy } from '../policy/index.js';
+import type { ComputerSurface } from '../surfaces/index.js';
 import { launchPlaywrightSession, PlaywrightSurface } from '../surfaces/playwright/index.js';
 
 import { createLlmClient } from './llmClient.js';
@@ -38,9 +43,16 @@ Options:
   --goal <text>        What the run should achieve, in plain language. Required.
   --target <url>       Where the application starts. Required.
   --name <text>        What to call the application in the prompt. Defaults to its host.
+  --input name=value   A value the run should use, repeatable. Becomes a capability input.
   --max-steps <n>      Model decisions the run may carry out.
   --timeout <ms>       Wall-clock ceiling for the whole run.
   --headed             Run the browser with a visible window.
+
+Compilation (a successful run becomes a reusable capability):
+  --capability-name <text>         Title Case name. Supplying it turns compilation on.
+  --capability-description <text>  What the capability does, for a reviewer or an agent.
+  --capability-id <slug>           File name in the capabilities directory. Derived otherwise.
+  --overwrite                      Replace a capability that already exists under that id.
 `;
 
 /** A CLI argument problem, reported the same way every other typed failure is. */
@@ -54,9 +66,19 @@ interface DiscoverArguments {
   readonly goal: string;
   readonly target: string;
   readonly name?: string;
+  readonly inputs: readonly DiscoveryInput[];
   readonly maxSteps?: number;
   readonly timeoutMs?: number;
   readonly headless: boolean;
+  /** Present when the run should be compiled into a capability afterwards. */
+  readonly capability?: CapabilityArguments;
+}
+
+interface CapabilityArguments {
+  readonly name: string;
+  readonly description: string;
+  readonly id: string;
+  readonly overwrite: boolean;
 }
 
 function requireValue(argv: readonly string[], index: number, flag: string): string {
@@ -76,10 +98,23 @@ function requireCount(argv: readonly string[], index: number, flag: string): num
   return value;
 }
 
+/** Lower-case kebab-case, so a capability name can become a file name. */
+function slugify(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+}
+
 export function parseDiscoverArguments(argv: readonly string[]): DiscoverArguments {
+  const inputs: DiscoveryInput[] = [];
   let goal: string | undefined;
   let target: string | undefined;
   let name: string | undefined;
+  let capabilityName: string | undefined;
+  let capabilityDescription: string | undefined;
+  let capabilityId: string | undefined;
+  let overwrite = false;
   let maxSteps: number | undefined;
   let timeoutMs: number | undefined;
   let headless = true;
@@ -107,6 +142,31 @@ export function parseDiscoverArguments(argv: readonly string[]): DiscoverArgumen
         index += 1;
         timeoutMs = requireCount(argv, index, '--timeout');
         break;
+      case '--input': {
+        index += 1;
+        const pair = requireValue(argv, index, '--input');
+        const separator = pair.indexOf('=');
+        if (separator <= 0) {
+          throw new DiscoverCommandError(`--input expects name=value, received "${pair}".`);
+        }
+        inputs.push({ name: pair.slice(0, separator), value: pair.slice(separator + 1) });
+        break;
+      }
+      case '--capability-name':
+        index += 1;
+        capabilityName = requireValue(argv, index, '--capability-name');
+        break;
+      case '--capability-description':
+        index += 1;
+        capabilityDescription = requireValue(argv, index, '--capability-description');
+        break;
+      case '--capability-id':
+        index += 1;
+        capabilityId = requireValue(argv, index, '--capability-id');
+        break;
+      case '--overwrite':
+        overwrite = true;
+        break;
       case '--headed':
         headless = false;
         break;
@@ -122,13 +182,58 @@ export function parseDiscoverArguments(argv: readonly string[]): DiscoverArgumen
     throw new DiscoverCommandError(`--target is required.\n\n${USAGE}`);
   }
 
+  const duplicate = inputs.find((input, at) => {
+    return inputs.findIndex((other) => other.name === input.name) !== at;
+  });
+  if (duplicate !== undefined) {
+    throw new DiscoverCommandError(`--input "${duplicate.name}" was supplied more than once.`);
+  }
+
   return {
     goal: goal.trim(),
     target,
     headless,
+    inputs,
     ...(name !== undefined && { name }),
     ...(maxSteps !== undefined && { maxSteps }),
     ...(timeoutMs !== undefined && { timeoutMs }),
+    ...(capabilityName !== undefined && {
+      capability: capabilityArgumentsFor(
+        capabilityName,
+        capabilityDescription,
+        capabilityId,
+        overwrite,
+        goal,
+      ),
+    }),
+  };
+}
+
+/**
+ * The capability options, with the parts a caller did not spell out.
+ *
+ * The id is derived from the name so the common invocation is one flag, and the
+ * description falls back to the goal, which is a true statement of what the capability
+ * does and is better than refusing to compile until somebody writes prose.
+ */
+function capabilityArgumentsFor(
+  name: string,
+  description: string | undefined,
+  id: string | undefined,
+  overwrite: boolean,
+  goal: string,
+): CapabilityArguments {
+  const derived = id ?? slugify(name);
+  if (derived === '') {
+    throw new DiscoverCommandError(
+      `--capability-name "${name}" does not produce a usable id. Pass --capability-id explicitly.`,
+    );
+  }
+  return {
+    name,
+    id: derived,
+    description: description ?? `Discovered workflow for the goal: ${goal}`,
+    overwrite,
   };
 }
 
@@ -148,6 +253,18 @@ function applicationName(args: DiscoverArguments): string {
   } catch {
     throw new DiscoverCommandError(`--target must be an absolute URL.`);
   }
+}
+
+/**
+ * What the command did: the run, and the compilation when one was asked for.
+ *
+ * Two fields rather than one merged result, because they are two separate things that
+ * happened and either can succeed while the other does not. A run can discover a workflow
+ * that then fails to compile, and that is a useful thing to be told precisely.
+ */
+export interface DiscoverCommandResult {
+  readonly discovery: DiscoveryResult;
+  readonly compilation?: CompilationResult;
 }
 
 export interface DiscoverCommandDeps {
@@ -199,7 +316,7 @@ function toPrintedResult(result: DiscoveryResult): Record<string, unknown> {
     target: result.target,
     stepCount: result.stepCount,
     durationMs: result.durationMs,
-    steps: result.trace.map(toPrintedStep),
+    steps: result.trace.entries.map(toPrintedStep),
   };
 
   if (result.status === 'success') {
@@ -258,7 +375,7 @@ function summarize(result: DiscoveryResult, evidencePath: string, model: string)
 export async function runDiscoverCommand(
   argv: readonly string[],
   deps: DiscoverCommandDeps,
-): Promise<DiscoveryResult> {
+): Promise<DiscoverCommandResult> {
   const args = parseDiscoverArguments(argv);
   const name = applicationName(args);
   const config = loadConfig(deps.env);
@@ -282,6 +399,7 @@ export async function runDiscoverCommand(
   const session = await launchPlaywrightSession({ headless: args.headless });
 
   let result: DiscoveryResult;
+  let compilation: CompilationResult | undefined;
   try {
     const surface = new PlaywrightSurface({
       page: session.page,
@@ -301,7 +419,15 @@ export async function runDiscoverCommand(
     result = await engine.discover({
       goal: args.goal,
       target: { name, entryPoint: args.target },
+      inputs: args.inputs,
     });
+
+    // Compiled inside the same session, because verification replay needs a surface and
+    // the one that is already open is the same kind the run used. It is still a separate
+    // run with its own id and its own evidence directory.
+    if (result.status === 'success' && args.capability !== undefined) {
+      compilation = await compileDiscovered(result, args.capability, config, surface, logger);
+    }
   } finally {
     await session.close();
   }
@@ -316,12 +442,110 @@ export async function runDiscoverCommand(
     recoveries: 0,
   });
 
-  deps.stdout(`${JSON.stringify(toPrintedResult(result), null, 2)}\n`);
+  const printed = toPrintedResult(result);
+  if (compilation !== undefined) {
+    printed['compilation'] = toPrintedCompilation(compilation);
+  }
+
+  deps.stdout(`${JSON.stringify(printed, null, 2)}\n`);
   deps.stderr(summarize(result, describePath(evidence.directory), config.llm.model));
+  if (compilation !== undefined) {
+    deps.stderr(summarizeCompilation(compilation));
+  }
   for (const warning of evidence.warnings) {
     deps.stderr(`Evidence Warning: ${warning}\n`);
   }
-  return result;
+  return { discovery: result, ...(compilation !== undefined && { compilation }) };
+}
+
+/** The compilation outcome, reduced to what is safe to print. Never the artifact body. */
+function toPrintedCompilation(compilation: CompilationResult): Record<string, unknown> {
+  if (compilation.status === 'compiled') {
+    return {
+      status: compilation.status,
+      capabilityId: compilation.capability.id,
+      artifactPath: compilation.artifactPath,
+      sourceDiscoveryRunId: compilation.sourceDiscoveryRunId,
+      verificationReplayRunId: compilation.verificationReplayRunId,
+      inputs: compilation.capability.inputs.map((input) => input.name),
+      outputs: compilation.capability.outputs.map((output) => output.name),
+      steps: compilation.capability.steps.map((step) => step.id),
+      skippedActions: compilation.skippedActions,
+    };
+  }
+  return {
+    status: compilation.status,
+    stage: compilation.stage,
+    code: compilation.code,
+    message: compilation.message,
+    sourceDiscoveryRunId: compilation.sourceDiscoveryRunId,
+    ...(compilation.verificationReplayRunId !== undefined && {
+      verificationReplayRunId: compilation.verificationReplayRunId,
+    }),
+  };
+}
+
+function summarizeCompilation(compilation: CompilationResult): string {
+  if (compilation.status === 'compiled') {
+    return [
+      '',
+      'Capability Saved',
+      '',
+      `  Capability:  ${compilation.capability.id}`,
+      `  Artifact:    ${describePath(compilation.artifactPath)}`,
+      `  Verified By: ${compilation.verificationReplayRunId}`,
+      '',
+    ].join('\n');
+  }
+  return [
+    '',
+    'Capability Rejected',
+    '',
+    `  Stage:  ${compilation.stage}`,
+    `  Code:   ${compilation.code}`,
+    `  Reason: ${compilation.message}`,
+    '',
+    '  Nothing was saved.',
+    '',
+  ].join('\n');
+}
+
+/**
+ * Compiles a successful run into a verified capability.
+ *
+ * A composition root again: the compiler is handed a store, a policy, the same kind of
+ * surface, and a way to open evidence for the verification replay. It chooses none of
+ * those itself, which is what keeps it free of both Playwright and any model.
+ */
+async function compileDiscovered(
+  result: DiscoverySuccess,
+  capability: CapabilityArguments,
+  config: AppConfig,
+  surface: ComputerSurface,
+  logger: Logger,
+): Promise<CompilationResult> {
+  const compiler = new ArtifactCompiler({
+    surface,
+    policy: new StaticPolicyEngine(config.policy),
+    store: new FileArtifactStore({ directory: config.capabilitiesDir }),
+    logger,
+    timeouts: config.surfaceTimeouts,
+    policySummary: summarizePolicy(config.policy),
+    evidence: async (artifact) => {
+      // A verification replay is its own run with its own id, so the chain a reviewer
+      // follows is discovery run, then capability, then this.
+      const runId = randomUUID();
+      logger.info('Verification Replay Starting', { runId, capabilityId: artifact.id });
+      return Promise.resolve(new FileEvidenceRecorder({ evidenceDir: config.evidenceDir, runId }));
+    },
+  });
+
+  return await compiler.compile(result.trace, {
+    id: capability.id,
+    name: capability.name,
+    description: capability.description,
+    overwrite: capability.overwrite,
+  });
 }
 
 /** Configuration first, then an explicit override for this one run. */

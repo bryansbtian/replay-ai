@@ -120,9 +120,17 @@ export default tseslint.config(
         {
           patterns: [
             {
-              group: ['**/llm', '**/llm/**', '**/discovery', '**/discovery/**', '@anthropic-ai/*'],
+              group: [
+                '**/llm',
+                '**/llm/**',
+                '**/discovery',
+                '**/discovery/**',
+                '**/compilation',
+                '**/compilation/**',
+                '@anthropic-ai/*',
+              ],
               message:
-                'replay/ must not depend on llm/ or discovery/: replay runs without an LLM in the loop.',
+                'replay/ must not depend on llm/, discovery/, or compilation/: replay is a standalone consumer of validated artifacts.',
             },
             PLAYWRIGHT_ONLY_IN_ADAPTER,
           ],
@@ -157,6 +165,29 @@ export default tseslint.config(
               group: ['**/replay', '**/replay/**'],
               message:
                 'discovery/ must not depend on the deterministic replay engine: a discovery trace is not an artifact.',
+            },
+            PLAYWRIGHT_ONLY_IN_ADAPTER,
+          ],
+        },
+      ],
+    },
+  },
+  {
+    // Architectural boundary: compilation turns a discovery trace into an artifact and
+    // verifies it by replaying it. It is deliberately deterministic, so it may not reach a
+    // model SDK or the provider clients, and it drives whatever surface it is handed rather
+    // than a browser it chose.
+    // Repeats the Playwright rule because a later block replaces the earlier one.
+    files: ['src/compilation/**/*.ts'],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        {
+          patterns: [
+            {
+              group: ['**/llm', '**/llm/**', '@anthropic-ai/*'],
+              message:
+                'compilation/ must be deterministic: turning a trace into an artifact never asks a model.',
             },
             PLAYWRIGHT_ONLY_IN_ADAPTER,
           ],

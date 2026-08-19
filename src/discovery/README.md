@@ -22,4 +22,5 @@ Playwright, or `replay`. A composition root under `cli/` chooses the provider an
 surface. Enforced by a scoped ESLint rule and by `tests/architecture.test.ts`.
 
 A successful run produces a `DiscoveryTrace`, not a capability artifact. Compiling one into
-the other is Phase 8's work and is deliberately not started here.
+the other belongs to `compilation/`, which depends on this directory and is not depended on
+by it.

@@ -7,7 +7,7 @@ that artifact is then _replayed_ deterministically, with no LLM in the decision 
 
 ## Current Status
 
-**Phase 7: LLM-driven workflow discovery.**
+**Phase 8: discovery compiled into reusable capabilities.**
 
 On top of the Phase 1 foundation (typed configuration, structured logging, a small CLI,
 enforced module boundaries, and the full quality gate), the Phase 2 surface layer (the
@@ -42,11 +42,26 @@ and every run writes the same sanitized evidence.
 is enforced by an ESLint restriction and by `tests/architecture.test.ts`: nothing under
 `src/replay/` may import `src/llm/` or `src/discovery/`.
 
-A successful discovery run produces a structured **trace**, not a capability artifact.
-Compiling a trace into a stored, parameterized, replay-tested artifact is Phase 8 and is
-deliberately not implemented, so the artifacts in `capabilities/` are still hand-authored.
-There is no human handoff yet either: a run that needs a person returns a structured
-escalation and stops, which is the seam Phase 9 builds on.
+Phase 8 closes the loop. A successful run is **compiled** into a capability artifact: the
+values the caller named become inputs, the extractions become declared outputs and real
+extract steps, and the state the run arrived at becomes the success condition. The artifact
+is then validated and **replayed against the live application by the real replay engine**
+before it is saved. A capability that does not replay is not written anywhere.
+
+The whole vertical slice now works end to end:
+
+```text
+plain-language goal ──▶ model-driven discovery ──▶ trace ──▶ compiler ──▶ artifact
+                                                                            │
+                                                        validated ◀─────────┘
+                                                            │
+                                          verification replay ──▶ saved capability
+                                                                            │
+                                              deterministic replay, no model ◀┘
+```
+
+There is no human handoff yet: a run that needs a person returns a structured escalation
+and stops, which is the seam Phase 9 builds on.
 
 ## Architecture
 
@@ -555,6 +570,145 @@ appears on either stream.
 The live path is the only thing in the repository that needs a model. The whole test suite
 mocks the `LLMClient` boundary and runs with no provider of any kind, so CI never spends a
 credit.
+
+## From Discovery To A Capability
+
+A discovery trace and a capability artifact are different documents, and the difference is
+the point of this stage.
+
+|            | Discovery Trace                       | Capability Artifact                              |
+| ---------- | ------------------------------------- | ------------------------------------------------ |
+| Says       | What happened during one run          | How the workflow is performed                    |
+| Ordered by | What the model did, mistakes included | The steps that should run again                  |
+| Values     | The concrete ones that were typed     | Named parameters plus workflow constants         |
+| Results    | What this run read                    | How to read it next time                         |
+| Lives      | In memory, never serialized           | `capabilities/<id>.json`, reviewed and committed |
+
+The trace is never saved as the capability. It is compiled into one, deterministically:
+the same trace and the same request always produce the same artifact, byte for byte, and
+**no model is involved in compilation**.
+
+### What The Compiler Does
+
+1. **Normalizes** each successful action into the step that performs it. Actions that
+   failed during discovery are not compiled, and the count is reported, because replaying
+   a locator that never resolved just reproduces the mistake more reliably.
+2. **Parameterizes** the values that were typed, by exact whole-value match against the
+   inputs you named with `--input`. No substring matching and no pattern guessing.
+3. **Declares inputs and outputs**, each conservatively typed as `string`.
+4. **Generates a real extract step** for every value the workflow reads.
+5. **Builds a success condition** from the control that appeared because the workflow ran,
+   which is the difference between the first screen and the last.
+6. **Names steps** after what they do: `enter-member-id`, `click-search`,
+   `await-member-summary`, `read-savings-balance`.
+
+### Parameters Versus Constants
+
+Discovery types concrete values. Which of them vary per invocation is something only you
+know, so you say so:
+
+```bash
+--input memberId=12345
+```
+
+A value equal to a named input becomes a parameter reference. Anything else stays a
+literal, which is the right answer for the parts of a workflow that never change:
+
+```jsonc
+{ "type": "fill", "value": { "source": "input", "name": "memberId" } }   // invocation data
+{ "type": "fill", "value": { "source": "literal", "value": "Savings" } } // workflow constant
+```
+
+The supplied value itself never reaches the artifact. Two inputs given the same value, or
+an input the run never typed, are compilation failures rather than guesses.
+
+### Outputs Are Instructions, Not Answers
+
+A capability stores **how to read a value**, never the value discovery read:
+
+```jsonc
+// In the artifact
+{ "id": "read-savings-balance", "type": "extract",
+  "target": { "strategies": [{ "kind": "attribute", "attribute": "data-field", "value": "savings-balance" }] },
+  "output": "savingsBalance" }
+
+// Never in the artifact
+{ "outputs": { "savingsBalance": "5234.17" } }
+```
+
+Output types stay `string`. Replay has no deterministic currency parser, so claiming
+`number` would be a promise the engine cannot keep, and a balance is read back exactly as
+the application renders it, `$1,024.50` included.
+
+### A Capability Is Saved Only If It Replays
+
+```text
+compile ──▶ validate ──▶ verification replay ──▶ save
+   │            │                 │                │
+   └── reject ──┴──── reject ─────┴──── reject ────┘   nothing is written
+```
+
+The verification replay uses the **real Phase 4 engine and the real Phase 6 policy**, with
+the values discovery used. There is no easier verification path, because the question being
+asked is whether the artifact works the way production replay will run it.
+
+It checks two things, not one. The replay has to succeed, and the values it reads have to
+match what the discovery run read. An extract step can resolve, return text, and satisfy
+every condition while reading the heading above the value instead of the value, which
+produces a capability that replays perfectly and answers the wrong question. That is
+rejected.
+
+Failures are reported by stage: `TRACE_NORMALIZATION_FAILED`, `PARAMETERIZATION_FAILED`,
+`ARTIFACT_VALIDATION_FAILED`, `VERIFICATION_REPLAY_FAILED`, `PERSISTENCE_FAILED`. A
+capability that already exists is never silently replaced; pass `--overwrite` to mean it.
+
+### Running The Complete Flow
+
+Serve the demo console on a local port, then discover and compile in one command:
+
+```bash
+LLM_PROVIDER=ollama \
+POLICY_ALLOWED_HOSTS=127.0.0.1:3100 \
+POLICY_ALLOWED_SCHEMES=http \
+npm run discover -- \
+  --goal "Look Up Demo Member 12345 And Read Their Savings Balance" \
+  --target http://127.0.0.1:3100/member-lookup.html \
+  --name "Demo Member Lookup" \
+  --input memberId=12345 \
+  --capability-name "Lookup Member Balance" \
+  --capability-description "Looks up a demo member by reference and reads their savings balance."
+```
+
+Which prints:
+
+```text
+Discovery Completed
+  Run ID:   5b4d7bbd-5b19-45d5-bf26-d11bd9b5fc5d
+  Status:   Goal Completed
+
+Capability Saved
+  Capability:  lookup-member-balance
+  Artifact:    capabilities\lookup-member-balance.json
+  Verified By: 8f020a92-1bf5-4350-a1aa-64495b5b3e2d
+```
+
+Then replay the saved capability, with no model involved, for a member the discovery run
+never saw:
+
+```bash
+POLICY_ALLOWED_HOSTS=127.0.0.1:3100 \
+POLICY_ALLOWED_SCHEMES=http \
+npm run replay -- \
+  --artifact capabilities/lookup-member-balance.json \
+  --input memberId=67890
+```
+
+```json
+{ "status": "success", "outputs": { "savingsBalance": "118.05" } }
+```
+
+Three runs, three run ids, one chain: the discovery run, the verification replay that
+allowed the capability to be saved, and the ordinary replay afterwards.
 
 ## Deterministic Replay
 
@@ -1342,17 +1496,17 @@ run evidence are project deliverables.
 
 ## Roadmap
 
-| Phase | Scope                                                                | Status  |
-| ----- | -------------------------------------------------------------------- | ------- |
-| 1     | Repository foundation: config, logging, boundaries, quality gate, CI | Done    |
-| 2     | Computer surface abstraction and the Playwright surface              | Done    |
-| 3     | Capability artifact schema, validation, serialization, and storage   | Done    |
-| 4     | Deterministic replay engine, replay CLI, real-browser replay proof   | Done    |
-| 5     | Execution results, error taxonomy, business outcomes, recovery       | Done    |
-| 6     | Policy guardrails and sanitized run evidence                         | Done    |
-| 7     | LLM-driven discovery loop, provider abstraction, discovery CLI       | Done    |
-| 8     | Compiling a discovery trace into a capability artifact               | Next    |
-| 9     | Escalation into a live human handoff                                 | Planned |
+| Phase | Scope                                                                | Status |
+| ----- | -------------------------------------------------------------------- | ------ |
+| 1     | Repository foundation: config, logging, boundaries, quality gate, CI | Done   |
+| 2     | Computer surface abstraction and the Playwright surface              | Done   |
+| 3     | Capability artifact schema, validation, serialization, and storage   | Done   |
+| 4     | Deterministic replay engine, replay CLI, real-browser replay proof   | Done   |
+| 5     | Execution results, error taxonomy, business outcomes, recovery       | Done   |
+| 6     | Policy guardrails and sanitized run evidence                         | Done   |
+| 7     | LLM-driven discovery loop, provider abstraction, discovery CLI       | Done   |
+| 8     | Compiling a discovery trace into a verified capability artifact      | Done   |
+| 9     | Escalation into a live human handoff                                 | Next   |
 
 ## Design Notes
 

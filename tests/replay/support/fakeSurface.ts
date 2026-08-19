@@ -34,6 +34,7 @@ export interface FakeScreen {
   readonly title?: string;
   readonly textSummary?: string;
   readonly controls?: readonly { role: string; name: string; enabled: boolean }[];
+  readonly values?: readonly { attribute: string; name: string }[];
 }
 
 export interface FakeBehavior {
@@ -102,6 +103,7 @@ export class FakeSurface implements ComputerSurface {
       textSummary: screen.textSummary ?? '',
       truncated: false,
       controls: screen.controls ?? [],
+      values: screen.values ?? [],
       durationMs: 1,
     };
   }

@@ -1,7 +1,7 @@
 import type { Page } from 'playwright';
 
 import { startStopwatch } from '../timing.js';
-import type { Observation, ObservedControl } from '../types.js';
+import type { Observation, ObservedControl, ObservedValue } from '../types.js';
 
 /**
  * Builds the bounded snapshot returned by `PlaywrightSurface.observe`.
@@ -65,14 +65,51 @@ function parseControls(snapshot: string): { controls: ObservedControl[]; truncat
   return { controls, truncated };
 }
 
+/**
+ * Attributes a team keeps stable, in the order a workflow should prefer them.
+ *
+ * A short, explicit list rather than every attribute on the page. These are the ones
+ * whose purpose is to be addressed by automation, so listing them is reporting what the
+ * application already offered rather than inventing a locator for it.
+ */
+const STABLE_ATTRIBUTES = ['data-field', 'data-testid'] as const;
+
+/** Beyond this a page is a data table, and listing every cell helps nobody. */
+const MAX_VALUES = 30;
+
+/**
+ * The addressable values on the page.
+ *
+ * Read from the DOM rather than the accessibility tree, because the thing being looked
+ * for is precisely what the accessibility tree omits: text that carries meaning and no
+ * role. Only the attribute and its value cross the boundary, never the content.
+ */
+async function readValues(page: Page): Promise<ObservedValue[]> {
+  const selector = STABLE_ATTRIBUTES.map((attribute) => `[${attribute}]`).join(',');
+  const elements = await page.locator(selector).all();
+
+  const values: ObservedValue[] = [];
+  for (const element of elements.slice(0, MAX_VALUES)) {
+    for (const attribute of STABLE_ATTRIBUTES) {
+      const name = await element.getAttribute(attribute);
+      if (name !== null && name !== '') {
+        values.push({ attribute, name });
+        break;
+      }
+    }
+  }
+  return values;
+}
+
 export async function observePage(page: Page, timeoutMs: number): Promise<Observation> {
   const elapsed = startStopwatch();
   const body = page.locator('body');
 
-  const [title, rawText, snapshot] = await Promise.all([
+  const [title, rawText, snapshot, values] = await Promise.all([
     page.title(),
     body.innerText({ timeout: timeoutMs }),
     body.ariaSnapshot({ timeout: timeoutMs }),
+    readValues(page),
   ]);
 
   const summary = collapseText(rawText);
@@ -85,6 +122,7 @@ export async function observePage(page: Page, timeoutMs: number): Promise<Observ
     textSummary: summary.slice(0, MAX_SUMMARY_CHARS),
     truncated: truncated || summary.length > MAX_SUMMARY_CHARS,
     controls,
+    values,
     durationMs: elapsed(),
   };
 }
