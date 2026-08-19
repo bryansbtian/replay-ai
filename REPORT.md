@@ -1065,8 +1065,143 @@ out, and the artifact was kept extensible enough that leaving it out costs nothi
 
 # Escalation & Handoff
 
-`src/handoff/` is still empty: nothing pauses a session or hands one to a person. What
-Phase 7 added is the thing Phase 9 will build on, which is a run that can say it needs one.
+A run that cannot safely continue pauses, asks for a person, hands them the browser it was
+already driving, records what they do, and takes control back. The mechanism is real: the
+same session, a genuine pause, and a deterministic decision about whether the run may go on.
+
+## How A Stuck State Is Detected
+
+Nothing new detects anything. Every trigger is a condition an earlier phase already
+recognized, which is why the handoff domain contains no heuristics:
+
+- Replay reaches it after the workflow's own declared recoveries have been offered the state
+  and could not clear it. Asking earlier would page somebody for a dialog the capability
+  already knows how to dismiss.
+- Policy reaches it on `POLICY_RISK_CONFIRMATION_REQUIRED`, and on nothing else.
+- Discovery reaches it when the model returns a structured escalation.
+
+Not every failure asks. A bad invocation, a missing output, and a surface that has gone away
+are still plain failures, and a run configured without a handler behaves exactly as it did
+before. That default matters: most invocations are scheduled with nobody watching, and a run
+that waits fifteen minutes for a person who does not exist is worse than one that fails.
+
+## Why The Pause Is A Stack Frame
+
+`request` returns a promise that nothing resolves until an operator acts, and the engine is
+sitting inside that await. So a paused run is not a run in a paused state, it is a run that
+is not executing: there is no loop still turning, no retry timer, and no queue, which means
+it cannot issue an action while it waits because there is no code left that could.
+
+That is also why the browser stays open. The `finally` that closes the session is outside
+`engine.run`, so while a session is waiting, held, or resuming, none of it has been reached.
+
+## One Owner, Enforced By A Table
+
+The session carries a single `ControlOwner` rather than a pair of flags. `isPaused` and
+`hasHuman` can be set independently, and half of those combinations are states nobody
+designed: paused with no human, running with a human, both at once. One owner makes those
+unrepresentable, and turns "may automation act?" into a comparison.
+
+Ownership goes to `none` while a request is unanswered, because the automation has stopped
+and nobody has arrived. Collapsing that into `human` would let a resume happen without a
+person ever having been there.
+
+Every move is checked against an explicit transition table, and what the table does not
+contain is the interesting part: nothing leaves `aborted`, nothing reaches `humanControl`
+without the pause in between, and `humanControl` cannot reach itself, which is what makes a
+second Take Control impossible rather than merely unlikely. The operator server validates
+through the same table, so a stale tab gets a `409` instead of an invalid transition.
+
+## The Same Live Session
+
+A person takes over the browser the run was already using: same context, cookies, history,
+half-filled form, and page. The handoff domain opens nothing. It asks the surface it was
+handed whether it can be operated by a person, which is a capability check rather than an
+assumption, because a surface driving something without a screen cannot be handed over and
+should say so.
+
+The guarantee is tested rather than asserted. The browser proof writes a value into the
+context before the run starts and reads it back after the resume; a fresh browser would have
+lost it. Comparing URLs would have proved nothing.
+
+## Recording What A Person Did, Honestly
+
+Listeners are attached to the page the surface is driving, on the capture phase, so the
+application's own handlers cannot swallow the events. What that can see is limited and the
+limitation is documented rather than papered over: a person clicking a button produces a DOM
+event, not the semantic target automation works in, so what is recorded is the best label
+the element offered. It is evidence that an intervention happened and roughly what it
+touched, not a recording that could be compiled into a workflow.
+
+No value is ever read out of an input event. A person typing during a handoff is usually
+typing the thing that stopped the run, which is a verification code or a credential, and
+there is no field for one anywhere in the chain from the page to the evidence file.
+
+## How Replay Resumes
+
+Deterministically, and without asking anything. Two cases, and the difference is whether the
+step happened:
+
+A step that **failed** never happened, so the engine carries it out now that the state a
+person fixed is there. The retry is both the continuation and the verification: a step that
+still cannot be carried out fails the run, and a guard means it will not ask for a person a
+second time, so a dialog nobody can clear cannot become a loop between the same operator and
+the same screen.
+
+A step the guardrail wanted **approval** for did happen, because the person performed it. It
+is not repeated, since repeating a submit is how one request becomes two. It is recorded as
+`resolvedByHuman`, and the capability's own later checkpoints and success condition are what
+prove the workflow arrived. This is the simpler of the two models the brief offered: the
+person performs the risky step, rather than approving the automation to perform it, which
+avoids inventing an approval token nothing else would use.
+
+Only steps that act can be delegated. A person can press a button on the workflow's behalf;
+they cannot hand the engine the value an `extract` was supposed to produce, so delegating one
+would skip a step and lose an output the capability promised.
+
+The run finishes with an ordinary `success`, `businessOutcome`, or `failure`. The
+intervention is part of the history, not a separate kind of answer.
+
+## How Discovery Resumes
+
+Differently, because it can. There is no stored step whose condition could be re-checked, and
+asking the model whether a person fixed things would be replacing evidence with an opinion.
+So it does what it does every other turn: it observes. The first decision after a handoff is
+taken from a fresh observation, and the loop guard's state fingerprint is re-seeded, because
+everything the model was looking at describes a screen that no longer exists.
+
+Asking for a person does not spend a step. And a run that needed help and got it finishes as
+a success: leaving it permanently marked as escalated would describe a run that needed help
+as one that never received any.
+
+## Evidence Stays One Run
+
+Every handoff event is written into the run that paused. A separate record would be two
+accounts of one event for a reader to reconcile, and the thing most worth knowing about a run
+is exactly the part a second file would have hidden. The live timeline from the demo reads
+straight through: steps, the failure, the request, the pause, the person, the resume, the
+retried step, and the outcome.
+
+The screenshot is a reference rather than an image. The Phase 6 recorder already stores
+captures under the run's directory and hands back a file name, so the intervention points at
+that and the operator page serves the same file. There is one copy.
+
+One detail worth naming: the session id is recorded as `handoffId`, because the shared
+redaction rules blank any field whose name contains "session". That is right for a session
+cookie and wrong for an identifier already in the operator URL, so the field was renamed
+rather than the rule loosened.
+
+## Why The Operator Interface Is Deliberately Small
+
+One server-rendered page, four routes, no framework, no build step, bound to loopback. It
+holds no replay logic and makes no decisions: each route looks a session up and calls one
+method, and the state machine answers. Its buttons are a convenience, and the server is the
+authorization.
+
+Manual control is the visible browser window rather than a streamed one. `--handoff` implies
+a headed run, the person operates the application directly, and that satisfies the
+same-session requirement without remote desktop infrastructure. A screenshot with synthetic
+click coordinates would have looked like a console and controlled nothing.
 
 ## Escalation Is A Result, Not An Exception
 
@@ -1087,16 +1222,17 @@ Two things produce one, and the result says which:
 The escalation carries the run id, the reason, the step count, the last action, and the
 whole trace, which is the material a person would need in order to take over.
 
-## Why Phase 9 Does Not Need A Redesign
+## What The Earlier Phases Made Possible
 
-The Phase 2 decision to keep the browser session outside the surface is what makes a live
-handoff possible: no automation object believes it owns the session lifetime, so the page
-the run was using can be given to a person and taken back. Discovery inherits that, because
-it drives a `ComputerSurface` it did not create and does not close.
+The Phase 2 decision to keep the browser session outside the surface is what made a live
+handoff buildable without a redesign: no automation object believes it owns the session
+lifetime, so the page a run was using can be given to a person and taken back. Discovery and
+replay both inherit that, because each drives a `ComputerSurface` it did not create and does
+not close.
 
-What is missing is only the mechanism: somewhere to send the request, a way for a person to
-answer, and a resumption path. None of that changes the shape of the result, which is why
-it was worth defining the result now.
+Phase 7 defined the escalation result before there was anything to do with it, and that
+turned out to be the right order: Phase 9 added a mechanism underneath an answer that already
+existed, rather than changing what a run reports.
 
 ## The Model Cannot Escalate Its Way Around A Rule
 
@@ -1298,6 +1434,25 @@ The `risk` the compiler writes is a description, derived from the step type rath
 taken from anything the model said. Policy decides what happens to a step at that risk, and
 an artifact declaring `safe` gains nothing it would not have had by staying silent.
 
+## A Handoff Is Not A Way Around The Guardrail
+
+`confirmationRequired` means the deployment permits this action **with a person present**, so
+asking for one honours the rule rather than working around it. Every other denial is a
+refusal and stays one: a blocked host, a forbidden action type, and an irreversible step are
+not offered to an operator, nobody is asked, and the action never reaches the surface. A test
+drives exactly that case and asserts both that the fill never happened and that no
+intervention was requested.
+
+The distinction is structural rather than remembered. The engine branches on one code, and
+everything else falls through to the same policy failure it always produced. There is no
+approval token, no operator override, and no path by which holding the session grants
+permission the deployment did not give.
+
+What a person can do is act. That is a real difference in authority and worth being precise
+about: an operator with the browser in front of them can do whatever the application lets
+them do, which is exactly the situation before any of this automation existed. What they
+cannot do is make the automation perform an action the policy refused.
+
 ## Sensitive Values Become Parameters
 
 The reason parameterization is a safety property and not only a reuse one: the value that
@@ -1398,8 +1553,23 @@ Deliberate omissions so far, with the reasoning:
   demonstrated by the end-to-end test and by hand rather than required before saving, since
   a capability whose second input the fixture cannot supply would be unsavable for a reason
   that has nothing to do with the workflow.
-- **No human handoff.** A run that needs a person returns a structured escalation and stops.
-  Nothing pauses, holds, or transfers a session.
+- **No remote operator access.** The operator interface binds to loopback, and manual control
+  is the browser window on the machine running it. Reaching a session from elsewhere means
+  streaming a browser or running one remotely, which is infrastructure this does not need to
+  demonstrate control transfer.
+- **No authentication or authorization.** There is none, deliberately: adding a login to a
+  loopback-bound page would be ceremony. Production operator access would need both, plus a
+  record of which person took control, and the session already has the field shape for that.
+- **No persistent session registry.** A `Map` in the process that started the run. A paused
+  session's whole value is the live browser it points at, and that does not survive a restart
+  either, so durability would be a promise nothing could keep.
+- **No multi-operator coordination.** One session has one owner, and the state machine refuses
+  a second Take Control. Two people negotiating over one browser is a product question, not a
+  mechanism this phase is missing.
+- **No learning from interventions.** A person fixing something is recorded as evidence and
+  nothing more. Rewriting a capability from a human action would mean compiling a workflow
+  from the coarsest observations in the system, and the Phase 8 compiler is deliberately not
+  fed by it.
 - **No screenshots during discovery.** The observation is text and structure. An image per
   turn would multiply the cost of a run for information the accessibility tree already
   carries on a web surface, and the recorder can still capture one when a surface without a

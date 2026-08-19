@@ -6,6 +6,7 @@ import type {
   CapabilityStep,
 } from '../artifacts/index.js';
 import { NO_EVIDENCE, type EvidenceRecorder } from '../evidence/index.js';
+import type { InterventionHandler, InterventionReason } from '../execution/index.js';
 import type { Logger } from '../logging/logger.js';
 import type { PolicyDecision, PolicyEngine } from '../policy/index.js';
 import {
@@ -86,11 +87,22 @@ export interface ReplayEngineOptions {
   readonly stepTimeoutMs?: number;
   /** Injected in tests so a result is comparable; a run generates one otherwise. */
   readonly replayId?: string;
+  /**
+   * Where the run asks for a person when it cannot safely continue.
+   *
+   * Optional, and absent by default. Without one, a run that meets a state it cannot clear
+   * fails exactly as it did before, which is the right behaviour for a scheduled invocation
+   * with nobody watching. It is an interface with two methods, so the engine never learns
+   * that a session registry or an operator server exists.
+   */
+  readonly intervention?: InterventionHandler;
 }
 
 /** What the engine decided to do about a step that did not succeed. */
 type StepResolution =
   | { readonly kind: 'retry' }
+  /** A person completed this step by hand, so the run advances past it rather than repeating it. */
+  | { readonly kind: 'skip' }
   | { readonly kind: 'result'; readonly result: ReplayResult }
   | { readonly kind: 'fail'; readonly failureKind: FailureKind };
 
@@ -102,6 +114,8 @@ interface RunContext {
   readonly started: number;
   readonly completedSteps: ReplayStepRecord[];
   readonly recoveries: RecoveryRecord[];
+  /** Steps that have already asked for a person, so none asks twice. */
+  readonly intervened: Set<string>;
 }
 
 /**
@@ -123,6 +137,51 @@ interface FailureDetail {
 
 type WithoutUndefined<T> = { [K in keyof T]: Exclude<T[K], undefined> };
 
+/**
+ * Whether a person could carry out this step in the engine's place.
+ *
+ * The three that change the application, and nothing else. A `wait` or a `checkpoint` is
+ * the engine asking a question rather than doing something, and an `extract` produces a
+ * value only the engine can collect.
+ */
+function isDelegable(step: CapabilityStep): boolean {
+  return step.type === 'navigate' || step.type === 'click' || step.type === 'fill';
+}
+
+/**
+ * How a failure is classified when nobody is available to intervene.
+ *
+ * A run that could have been rescued and was not is still the failure it always was, so
+ * the original code decides the kind rather than the absence of an operator.
+ */
+function failureKindFor(code: string): FailureKind {
+  if (isPolicyDenial(code)) {
+    return 'policy';
+  }
+  return 'terminal';
+}
+
+/**
+ * The code for a run that asked for a person and did not get one.
+ *
+ * Distinguished from the failure that prompted it, because "the workflow met a dialog it
+ * does not know" and "nobody answered" are different problems for different people, and a
+ * run that reports only the first hides the second.
+ */
+function interventionFailureCode(
+  status: 'aborted' | 'unavailable',
+  original: ReplayFailureCode,
+): ReplayFailureCode {
+  if (status === 'aborted') {
+    return 'REPLAY_INTERVENTION_ABORTED';
+  }
+  if (isPolicyDenial(original)) {
+    // A guardrail that needed approval and got none is still the guardrail's answer.
+    return original;
+  }
+  return 'REPLAY_INTERVENTION_UNAVAILABLE';
+}
+
 /** Mirrors the artifact package's helper, and exists for the same reason. */
 function withoutAbsentKeys<T extends object>(value: T): WithoutUndefined<T> {
   const result: Record<string, unknown> = {};
@@ -143,6 +202,7 @@ export class ReplayEngine {
   private readonly timeouts: SurfaceTimeouts;
   private readonly stepTimeoutMs: number | undefined;
   private readonly replayId: string | undefined;
+  private readonly intervention: InterventionHandler | undefined;
   /** Policy answers awaiting a journal write, see `onPolicyDecision`. */
   private readonly decisions: { step: CapabilityStep; decision: PolicyDecision }[] = [];
 
@@ -154,6 +214,7 @@ export class ReplayEngine {
     this.timeouts = options.timeouts ?? DEFAULT_SURFACE_TIMEOUTS;
     this.stepTimeoutMs = options.stepTimeoutMs;
     this.replayId = options.replayId;
+    this.intervention = options.intervention;
   }
 
   /**
@@ -178,6 +239,7 @@ export class ReplayEngine {
       started: performance.now(),
       completedSteps: [],
       recoveries: [],
+      intervened: new Set<string>(),
     };
 
     // Input names only. A value can be a credential, and an input can be declared
@@ -290,6 +352,9 @@ export class ReplayEngine {
       if (resolved.kind === 'retry') {
         continue;
       }
+      if (resolved.kind === 'skip') {
+        return undefined;
+      }
       if (resolved.kind === 'result') {
         return resolved.result;
       }
@@ -385,6 +450,22 @@ export class ReplayEngine {
     // what it meant, or dismissing something and trying again, would both be the
     // automation arguing with the rule that just stopped it.
     if (isPolicyDenial(failure.code)) {
+      // The one denial a person can answer. `confirmationRequired` means the deployment
+      // permits this action with somebody present, so asking for somebody is honouring the
+      // rule rather than working around it. Every other denial is a refusal, and stays one.
+      //
+      // Only a step that acts can be delegated. A person can press a button on the
+      // workflow's behalf; they cannot hand the engine the value an `extract` was supposed
+      // to produce, so delegating one would skip a step and lose an output the capability
+      // promised.
+      if (failure.code === 'POLICY_RISK_CONFIRMATION_REQUIRED' && isDelegable(step)) {
+        return await this.requestIntervention(
+          context,
+          step,
+          failure,
+          'POLICY_CONFIRMATION_REQUIRED',
+        );
+      }
       return { kind: 'fail', failureKind: 'policy' };
     }
 
@@ -397,7 +478,100 @@ export class ReplayEngine {
       }
     }
 
-    return await this.tryRecovery(context, recovery, step, failure);
+    const recovered = await this.tryRecovery(context, recovery, step, failure);
+    if (recovered.kind !== 'fail') {
+      return recovered;
+    }
+
+    // Asking for a person is the last thing tried, after the workflow's own declared
+    // recoveries have been offered the state and could not clear it. Doing it earlier would
+    // page somebody for a dialog the capability already knows how to dismiss.
+    //
+    // The kind recovery arrived at is carried through, so a run with nobody to ask reports
+    // exactly what it reported before this path existed.
+    return await this.requestIntervention(
+      context,
+      step,
+      failure,
+      'UNRECOVERABLE_FAILURE',
+      recovered.failureKind,
+    );
+  }
+
+  /**
+   * Pauses the run and waits for somebody, then checks whether it may continue.
+   *
+   * The check is the important half. A person handing control back is not a claim that the
+   * application is where the workflow expects it to be, so the step's own condition is
+   * re-evaluated against the live page before anything advances. A step that carries no
+   * condition (a click a person performed on the workflow's behalf) cannot be verified in
+   * isolation, and is trusted only as far as the capability's later checkpoints and its
+   * success condition, which still have to hold.
+   */
+  private async requestIntervention(
+    context: RunContext,
+    step: CapabilityStep,
+    failure: StepFailure,
+    reason: InterventionReason,
+    unattendedKind: FailureKind = failureKindFor(failure.code),
+  ): Promise<StepResolution> {
+    const handler = this.intervention;
+    if (handler === undefined) {
+      return { kind: 'fail', failureKind: unattendedKind };
+    }
+
+    // One request per step. A resumed step that fails again is a step a person could not
+    // fix, and asking them a second time would loop between the same dialog and the same
+    // operator for as long as they kept answering.
+    if (context.intervened.has(step.id)) {
+      return { kind: 'fail', failureKind: unattendedKind };
+    }
+    context.intervened.add(step.id);
+
+    const outcome = await handler.request({
+      source: 'replay',
+      reason,
+      subject: context.artifact.name,
+      stepId: step.id,
+      code: failure.code,
+      detail: failure.message,
+    });
+
+    if (outcome.status !== 'resolved') {
+      await handler.settle({ resumed: false, detail: outcome.reason });
+      return {
+        kind: 'result',
+        result: await this.fail(context, {
+          code: interventionFailureCode(outcome.status, failure.code),
+          kind: 'terminal',
+          message: `Replay stopped at step "${step.id}": ${outcome.reason}`,
+          stepId: step.id,
+        }),
+      };
+    }
+
+    await handler.settle({ resumed: true });
+
+    if (reason === 'POLICY_CONFIRMATION_REQUIRED') {
+      // The guardrail wanted a person, and the person carried the action out. Running it
+      // again would repeat what they just did by hand, which for a submit is how one
+      // request becomes two.
+      context.completedSteps.push({
+        stepId: step.id,
+        stepType: step.type,
+        attempts: 1,
+        durationMs: 0,
+        resolvedByHuman: true,
+      });
+      await context.journal.stepCompleted(step, 1, 0);
+      return { kind: 'skip' };
+    }
+
+    // The step did not happen: it failed, which is why somebody was called. So the engine
+    // does it, now that the state a person fixed is there. This is the verification as well
+    // as the continuation, because a step that still cannot be carried out fails, and the
+    // guard above means it will not ask for a person a second time.
+    return { kind: 'retry' };
   }
 
   /**

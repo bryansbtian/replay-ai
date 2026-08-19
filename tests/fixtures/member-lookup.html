@@ -122,6 +122,23 @@
           return;
         }
 
+        // 33333 answers with an interstitial nothing declares, and clearing it reveals the
+        // member. Replay cannot press the button (it has never been told about it) but a
+        // person can, which is what makes this the human handoff scenario: the run stops,
+        // somebody resolves the state by hand, and the workflow can then continue.
+        if (reference === '33333') {
+          renderDialog({
+            label: 'Additional Verification Required',
+            testId: 'additional-verification',
+            action: 'Continue',
+            actionTestId: 'verification-continue',
+            onClear: () => {
+              renderSummary(MEMBERS['12345']);
+            },
+          });
+          return;
+        }
+
         // 66666 answers with an interstitial nothing declares. Replay must stop rather
         // than press a button it has never been told about.
         if (reference === '66666') {

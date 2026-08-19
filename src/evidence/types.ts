@@ -45,6 +45,18 @@ export const RUN_EVENT_NAMES = [
   'goal_completed',
   'escalation_requested',
   'discovery_stopped',
+  // Human handoff. Recorded into the run that paused rather than into a record of its own:
+  // a person taking over is part of what happened to that run, and a separate timeline
+  // would be two accounts of one event that a reader has to reconcile.
+  'intervention_requested',
+  'automation_paused',
+  'human_control_started',
+  'human_action',
+  'human_control_ended',
+  'automation_resumed',
+  'resume_failed',
+  'intervention_timeout',
+  'session_aborted',
 ] as const;
 
 export type RunEventName = (typeof RUN_EVENT_NAMES)[number];

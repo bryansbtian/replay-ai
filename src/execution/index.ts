@@ -8,3 +8,12 @@
  * risk, and two copies of it would be two places for the bound to drift.
  */
 export { DeadlineExceededError, withDeadline } from './deadlines.js';
+export {
+  INTERVENTION_REASONS,
+  type InterventionContext,
+  type InterventionHandler,
+  type InterventionOutcome,
+  type InterventionReason,
+  type InterventionSettlement,
+  type InterventionSource,
+} from './intervention.js';

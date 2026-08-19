@@ -97,9 +97,11 @@ export interface RecordedEvent {
 export class RecordingEvidence implements EvidenceRecorder {
   readonly runId = '00000000-0000-4000-8000-000000000000';
   readonly directory = '/evidence/runs/test';
-  readonly capturesScreenshots = false;
+  readonly capturesScreenshots = true;
   readonly warnings: string[] = [];
   readonly events: RecordedEvent[] = [];
+  /** Captures the recorder was asked to keep, by the name it gave them back. */
+  readonly screenshots: string[] = [];
 
   startRecord?: RunStartRecord;
   outcome?: RunOutcomeRecord;
@@ -114,8 +116,10 @@ export class RecordingEvidence implements EvidenceRecorder {
     return Promise.resolve();
   }
 
-  saveScreenshot(): Promise<string | undefined> {
-    return Promise.resolve(undefined);
+  saveScreenshot(label: string): Promise<string | undefined> {
+    const file = `${String(this.screenshots.length + 1).padStart(3, '0')}-${label}.png`;
+    this.screenshots.push(file);
+    return Promise.resolve(file);
   }
 
   complete(outcome: RunOutcomeRecord): Promise<void> {

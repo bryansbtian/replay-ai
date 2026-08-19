@@ -7,7 +7,7 @@ that artifact is then _replayed_ deterministically, with no LLM in the decision 
 
 ## Current Status
 
-**Phase 8: discovery compiled into reusable capabilities.**
+**Phase 9: human handoff and control transfer.**
 
 On top of the Phase 1 foundation (typed configuration, structured logging, a small CLI,
 enforced module boundaries, and the full quality gate), the Phase 2 surface layer (the
@@ -60,8 +60,11 @@ plain-language goal ──▶ model-driven discovery ──▶ trace ──▶ c
                                               deterministic replay, no model ◀┘
 ```
 
-There is no human handoff yet: a run that needs a person returns a structured escalation
-and stops, which is the seam Phase 9 builds on.
+Phase 9 makes that escalation real. A run that cannot safely continue pauses, asks for a
+person through a small local operator interface, hands them **the same live browser
+session** it was using, records what they do, and takes control back. Replay then verifies
+the application itself before continuing, and finishes the workflow deterministically. No
+model is involved in any of it.
 
 ## Architecture
 
@@ -710,6 +713,171 @@ npm run replay -- \
 Three runs, three run ids, one chain: the discovery run, the verification replay that
 allowed the capability to be saved, and the ordinary replay afterwards.
 
+## Human Handoff
+
+Some states automation should not push past: a verification dialog nobody wrote down, an
+action the deployment permits only with a person present, a screen the model will not
+decide about. Rather than failing, a run can **pause and ask for somebody**.
+
+```text
+running ──▶ waitingForHuman ──▶ humanControl ──▶ resuming ──▶ running ──▶ completed
+                  │                   │              │
+                  └── aborted ────────┘              └── failed
+```
+
+The pause is real. `request` returns a promise that nothing resolves until an operator
+acts, and the engine is sitting inside that await, so a paused run is a stack frame: it
+cannot issue an action while it waits because there is no code left running that could.
+
+### What Can Trigger It
+
+| Source              | Condition                                                                                          |
+| ------------------- | -------------------------------------------------------------------------------------------------- |
+| Replay (Phase 5)    | A step failed, the capability's own recoveries could not clear it, and there is nobody else to ask |
+| Policy (Phase 6)    | `POLICY_RISK_CONFIRMATION_REQUIRED` on a step that acts                                            |
+| Discovery (Phase 7) | The model returned a structured escalation                                                         |
+
+Not every failure asks for a person. A bad invocation, a missing output, and a surface that
+went away are all still plain failures, and a run started without `--handoff` behaves
+exactly as it did before.
+
+### Session Ownership
+
+One session, one owner, enforced by a state machine rather than by flags:
+
+```ts
+type ControlOwner = 'replay' | 'discovery' | 'human' | 'none';
+```
+
+Ownership goes to `none` while a request is waiting, because the automation has stopped and
+nobody has arrived yet. Every transition is checked against an explicit table, so a second
+Take Control, a resume from somebody who never took control, and a resume after an abort are
+all refused. Automation asks `automationMayAct` before it acts, which is one comparison
+rather than a judgement.
+
+### The Same Live Session
+
+This is the part that matters. A person takes over **the browser the run was already
+driving**: same context, same cookies, same history, same half-filled form, same page. The
+handoff domain never opens anything; it asks the surface it was handed whether it can be
+operated by a person, and hands that surface over.
+
+The guarantee is checked rather than asserted. `tests/handoff/browserHandoff.test.ts` writes
+a value into the browser context before the run starts and reads it back after the resume;
+a fresh browser would have lost it.
+
+### Taking Control And Resuming
+
+The operator interface is deliberately minimal: one server-rendered page, four routes, no
+framework, bound to `127.0.0.1`.
+
+```text
+GET  /operator/:sessionId              the page
+GET  /operator/:sessionId/session      the session as JSON
+GET  /operator/:sessionId/screenshot   the capture taken when the run stopped
+POST /operator/:sessionId/take-control
+POST /operator/:sessionId/resume
+POST /operator/:sessionId/abort
+```
+
+It shows the capability or goal, the current step, the reason, the code, the URL, the
+control owner, the status, the screenshot, and the human actions recorded so far. It offers
+only the buttons the session can honour, and the buttons are a convenience rather than the
+authorization: every transition is validated server-side, so a stale tab gets a `409`.
+
+**Manual control is the visible browser window.** `--handoff` implies a headed run, and the
+person operates the application directly. That is the simplest mechanism that genuinely
+preserves the session, and it needs no remote streaming.
+
+### How Replay Resumes
+
+Replay never guesses, and never asks a model:
+
+- **A step that failed** is carried out by the engine once the person has made it possible.
+  The step never happened, so retrying it is both the continuation and the verification: if
+  it fails again the run stops, and it does not ask for a person twice.
+- **A step the policy required approval for** is not repeated, because the person performed
+  it. Repeating a submit is how one request becomes two. It is recorded as
+  `resolvedByHuman`, and the capability's later checkpoints and its success condition are
+  what prove the workflow got where it was meant to.
+
+Either way the run finishes with an ordinary `success`, `businessOutcome`, or `failure`.
+
+### How Discovery Resumes
+
+Discovery has no stored step whose condition could be checked, so it does what it does every
+other turn: it **looks again**. The first decision after a handoff is taken from a fresh
+observation, never from the screen the model was staring at when it escalated. Asking for a
+person does not spend a step, and a run that needed help and got it finishes as a success
+rather than staying marked as escalated.
+
+### Policy Is Not Bypassed
+
+A handoff is not a way around a guardrail. `confirmationRequired` means the deployment
+permits the action **with a person present**, so asking for one honours the rule. Every other
+denial is a refusal and stays one: nobody is even asked, and the action never reaches the
+surface. Only steps that act can be delegated, because a person cannot hand the engine the
+value an `extract` was supposed to produce.
+
+### What Gets Recorded
+
+Into the same run, not a separate one:
+
+```text
+intervention_requested · automation_paused · human_control_started
+human_action · human_control_ended · automation_resumed
+resume_failed · intervention_timeout · session_aborted
+```
+
+A human action is recorded as its type, the best label the element offered, and where it
+happened. **Never what was typed**: a person filling a field during a handoff is usually
+typing the verification code that stopped the run.
+
+### Running The Demo
+
+Serve the demo console, then replay the member whose search puts up a dialog the capability
+knows nothing about:
+
+```bash
+POLICY_ALLOWED_HOSTS=127.0.0.1:3100 \
+POLICY_ALLOWED_SCHEMES=http \
+OPERATOR_PORT=4400 \
+npm run replay -- \
+  --artifact capabilities/lookup-member-balance.json \
+  --input memberId=33333 \
+  --handoff
+```
+
+The run pauses and prints where to go:
+
+```text
+Human Handoff Enabled
+
+  Session ID:   c6b09073-3dde-48c9-bbc0-d716d60784b7
+  Operator URL: http://127.0.0.1:4400/operator/c6b09073-3dde-48c9-bbc0-d716d60784b7
+```
+
+Open that page, press **Take Control**, clear the dialog in the browser window that is
+already open, then press **Resume Automation**. Replay carries on and completes. **Abort
+Session** ends it instead, and the run reports `REPLAY_INTERVENTION_ABORTED`.
+
+### Limitations Of The Local Operator Model
+
+Stated plainly, because they are deliberate:
+
+- **The registry is in memory.** Sessions live as long as the command that started them. A
+  restart loses a paused session, which is fine because it also loses the browser.
+- **Local only.** The server binds to loopback and has no authentication. Production
+  operator access would need authentication, authorization, and a way to reach a browser
+  running on another machine.
+- **Manual control needs the machine.** The person has to be at the keyboard of the host
+  running the browser. There is no remote streaming.
+- **Human action recording is coarse.** Direct browser interaction produces DOM events, not
+  the semantic targets automation works in, so what is captured is the best label available.
+  It is evidence of an intervention, not a recording that could be replayed.
+- **Human actions never change a capability.** A person fixing something is recorded and
+  nothing more. Learning from interventions is future work.
+
 ## Deterministic Replay
 
 Replay is the production path. It takes a saved capability artifact, an invocation, and a
@@ -1281,6 +1449,13 @@ The model, used by discovery and by nothing else:
 | `DISCOVERY_MAX_STEPS`  | No                   | `15`                     | Model decisions one run may carry out.     |
 | `DISCOVERY_TIMEOUT_MS` | No                   | `180000`                 | Wall-clock ceiling for one discovery run.  |
 
+Human handoff, used only by a run started with `--handoff`:
+
+| Variable                        | Required | Default  | Purpose                                                  |
+| ------------------------------- | -------- | -------- | -------------------------------------------------------- |
+| `HUMAN_INTERVENTION_TIMEOUT_MS` | No       | `900000` | How long a paused run waits for somebody before failing. |
+| `OPERATOR_PORT`                 | No       | `0`      | Operator interface port. Zero lets the system choose.    |
+
 Surface waiting budgets, all in milliseconds and all optional:
 
 | Variable                        | Default | Purpose                                                |
@@ -1506,7 +1681,7 @@ run evidence are project deliverables.
 | 6     | Policy guardrails and sanitized run evidence                         | Done   |
 | 7     | LLM-driven discovery loop, provider abstraction, discovery CLI       | Done   |
 | 8     | Compiling a discovery trace into a verified capability artifact      | Done   |
-| 9     | Escalation into a live human handoff                                 | Next   |
+| 9     | Human handoff: session ownership, operator interface, resume         | Done   |
 
 ## Design Notes
 

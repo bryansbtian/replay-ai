@@ -1,0 +1,42 @@
+{
+  "runId": "832b79d2-6f39-4138-ae1f-d625fd4a276a",
+  "kind": "replay",
+  "capabilityId": "lookup-member-balance",
+  "capabilityVersion": 1,
+  "capabilityName": "Lookup Member Balance",
+  "inputNames": [
+    "memberId"
+  ],
+  "policy": {
+    "allowedHosts": [
+      "127.0.0.1:3100"
+    ],
+    "allowedSchemes": [
+      "http"
+    ],
+    "allowedRoutes": [],
+    "allowedActions": [
+      "navigate",
+      "click",
+      "fill",
+      "extract",
+      "wait",
+      "checkpoint"
+    ],
+    "riskPolicy": {
+      "safe": "allow",
+      "risky": "requireConfirmation",
+      "irreversible": "block"
+    }
+  },
+  "startedAt": "2026-08-19T18:25:44.788Z",
+  "completedAt": "2026-08-19T18:28:02.472Z",
+  "status": "success",
+  "outputNames": [
+    "savingsBalance"
+  ],
+  "durationMs": 136564,
+  "completedSteps": 5,
+  "recoveries": 0,
+  "warnings": []
+}
