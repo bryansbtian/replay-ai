@@ -1,3 +1,5 @@
+import { resolve } from 'node:path';
+
 import { describe, expect, it } from 'vitest';
 
 import { loadConfig, requireAnthropicApiKey, toSafeConfig } from '../src/config/index.js';
@@ -5,6 +7,19 @@ import { ConfigurationError } from '../src/errors.js';
 import { DEFAULT_SURFACE_TIMEOUTS } from '../src/surfaces/index.js';
 
 const CWD = '/workspace';
+
+/**
+ * What resolving a path against `CWD` produces on the platform running the suite.
+ *
+ * `loadConfig` resolves relative paths with `node:path`, so the answer is `/workspace/x`
+ * on a POSIX machine and `C:\workspace\x` on Windows, where a rooted path also acquires
+ * the current drive. Asserting the literal POSIX string would be asserting the platform
+ * rather than the behaviour, which is that a relative directory is resolved against the
+ * supplied working directory and an absolute one is left alone.
+ */
+function underCwd(...segments: readonly string[]): string {
+  return resolve(CWD, ...segments);
+}
 
 function captureError(fn: () => unknown): unknown {
   try {
@@ -20,8 +35,8 @@ describe('loadConfig', () => {
     const config = loadConfig({}, { cwd: CWD });
 
     expect(config.logLevel).toBe('info');
-    expect(config.evidenceDir).toBe('/workspace/evidence');
-    expect(config.capabilitiesDir).toBe('/workspace/capabilities');
+    expect(config.evidenceDir).toBe(underCwd('evidence'));
+    expect(config.capabilitiesDir).toBe(underCwd('capabilities'));
     expect(config.anthropicApiKey).toBeUndefined();
   });
 
@@ -37,8 +52,10 @@ describe('loadConfig', () => {
     );
 
     expect(config.logLevel).toBe('debug');
+    // Already absolute on every platform, so it is kept exactly as given rather than
+    // resolved against the working directory.
     expect(config.evidenceDir).toBe('/var/run/evidence');
-    expect(config.capabilitiesDir).toBe('/workspace/artifacts/caps');
+    expect(config.capabilitiesDir).toBe(underCwd('artifacts', 'caps'));
     expect(config.anthropicApiKey).toBe('test-key');
   });
 

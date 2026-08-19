@@ -7,7 +7,7 @@ that artifact is then _replayed_ deterministically, with no LLM in the decision 
 
 ## Current Status
 
-**Phase 6: safety guardrails and run evidence.**
+**Phase 7: LLM-driven workflow discovery.**
 
 On top of the Phase 1 foundation (typed configuration, structured logging, a small CLI,
 enforced module boundaries, and the full quality gate), the Phase 2 surface layer (the
@@ -31,11 +31,22 @@ every run writes **sanitized evidence** to disk: a manifest, an ordered event lo
 screenshot of the failure that ended it, with no credential, token, or invocation value
 anywhere in the record.
 
-Replay does not use an LLM, and neither does its recovery. There is no Anthropic
-integration and no discovery loop in this repository yet, so the artifacts that exist were
-authored by hand rather than recorded. There is also no policy engine, no evidence
-capture, and no human handoff. Every directory that is still empty says so in its own
-README, along with the dependencies it is allowed to have.
+Phase 7 adds the other half of the system: a **discovery** loop that is given a goal in
+plain language and works out how to achieve it by driving the application one action at a
+time. A model observes the current screen, returns a single validated structured decision,
+and the application decides whether to honour it. Every proposed action passes the same
+Phase 6 policy engine a stored step does, every run is bounded by explicit loop guards,
+and every run writes the same sanitized evidence.
+
+**Discovery uses an LLM. Replay does not.** That split is the point of the project, and it
+is enforced by an ESLint restriction and by `tests/architecture.test.ts`: nothing under
+`src/replay/` may import `src/llm/` or `src/discovery/`.
+
+A successful discovery run produces a structured **trace**, not a capability artifact.
+Compiling a trace into a stored, parameterized, replay-tested artifact is Phase 8 and is
+deliberately not implemented, so the artifacts in `capabilities/` are still hand-authored.
+There is no human handoff yet either: a run that needs a person returns a structured
+escalation and stops, which is the seam Phase 9 builds on.
 
 ## Architecture
 
@@ -322,6 +333,228 @@ Serialization runs the artifact back through validation before writing, so a fil
 exists is a file that parses. Output is indented, ends with a newline, and has a key
 order that does not depend on how the object was built, which keeps a pull request diff
 about the workflow rather than about object construction.
+
+## Workflow Discovery
+
+Discovery is given a goal, a target application, and a `ComputerSurface`, and works out
+how the goal is achieved by driving the real interface. It is the only part of the system
+with a model in its decision loop.
+
+```text
+Goal ──▶ Observe ──▶ Model ──▶ Validate ──▶ Policy ──▶ Surface ──▶ Observe ──┐
+           ▲                                                                  │
+           └──────────────────────────────────────────────────────────────────┘
+                                       │
+              Goal Completed  ·  Stopped  ·  Escalation Required
+```
+
+One turn is one action. The model is never asked to plan a whole workflow up front,
+because the point of computer use is that the next decision reacts to what the application
+actually did with the last one.
+
+### The Observe, Decide, Act Loop
+
+Each turn does six things in this order:
+
+1. **Observe.** The surface returns a bounded snapshot: URL, title, collapsed visible text,
+   and the interactive controls with their roles, accessible names, and enabled state.
+   Never raw HTML, cookies, storage, headers, or hidden fields.
+2. **Decide.** The observation, the goal, a bounded recent history, and the values read so
+   far are sent to the model, which returns one decision.
+3. **Validate.** The response is parsed and checked against a Zod schema. There is no cast
+   and no partial parse, so an answer that is not a decision cannot become one.
+4. **Evaluate.** The validated action goes to the Phase 6 policy engine.
+5. **Act.** An allowed action is applied through `ComputerSurface`. Discovery never touches
+   Playwright.
+6. **Observe again.** The resulting state is fingerprinted, recorded, and fed to the next
+   turn.
+
+### Structured Decisions, Never Code
+
+The model returns one of exactly three decisions, and never executable code, a script, or
+a selector to evaluate:
+
+```jsonc
+{ "type": "action", "action": { ... }, "summary": "Submit the member search form" }
+{ "type": "complete", "summary": "The balance is visible", "outputs": { "savingsBalance": "5234.17" } }
+{ "type": "escalate", "reason": "The application is asking to approve a payment" }
+```
+
+The action vocabulary is the surface's own, and it is closed: `navigate`, `click`, `fill`,
+`extract`, `wait`. An action nobody implemented fails validation instead of reaching a
+dispatch. Every schema object is a `strictObject`, so an unknown key is rejected, which is
+also why there is nowhere for the model to return reasoning even if it wanted to.
+
+Controls are named with the same generic target model a stored artifact uses, so a control
+described during discovery is described exactly the way a replayed step describes one:
+
+```json
+{
+  "description": "Member ID Field",
+  "strategies": [
+    { "kind": "role", "role": "textbox", "name": "Member ID" },
+    { "kind": "label", "text": "Member ID" }
+  ]
+}
+```
+
+### Policy Applies To The Model
+
+Every proposed action is evaluated by the same external policy engine that governs replay,
+before it reaches the surface. A model cannot override it, and a summary asserting that an
+action is safe carries no authority: the declared risk handed to policy is derived from the
+action, never taken from the model.
+
+- **Allowed**: the action is applied.
+- **Blocked**: the run stops with `DISCOVERY_POLICY_BLOCKED`, and the action never reaches
+  the surface. Exit code 3.
+- **Confirmation required**: represented as an escalation, because there is nobody to ask
+  yet. Exit code 4.
+
+The opening navigation to the target is checked too.
+
+### Stopping Conditions
+
+Discovery cannot loop forever, and none of these limits is visible to the model as
+something it could argue with:
+
+| Condition                | Code                               |
+| ------------------------ | ---------------------------------- |
+| Step limit reached       | `DISCOVERY_MAX_STEPS_EXCEEDED`     |
+| Run deadline             | `DISCOVERY_DEADLINE_EXCEEDED`      |
+| Same action repeated     | `DISCOVERY_REPEATED_ACTION`        |
+| Screen never changes     | `DISCOVERY_REPEATED_STATE`         |
+| Actions keep failing     | `DISCOVERY_DEAD_END`               |
+| Policy refused           | `DISCOVERY_POLICY_BLOCKED`         |
+| Answer is not a decision | `DISCOVERY_MODEL_RESPONSE_INVALID` |
+| Provider failed          | `DISCOVERY_MODEL_UNAVAILABLE`      |
+| Surface went away        | `DISCOVERY_SURFACE_UNAVAILABLE`    |
+| Completion unsupported   | `DISCOVERY_COMPLETION_UNVERIFIED`  |
+
+Repeated actions are recognized by a fingerprint of the normalized action. A `fill`
+contributes a digest of its value rather than the value, so loop protection never carries
+somebody's reference into a log. Repeated states are recognized by a deterministic
+fingerprint of the sanitized observation structure. That catches the loop that actually
+happens, which is an action that changes nothing; it will not catch a loop on a page
+carrying a clock or a rotating advertisement, which changes fingerprint every time.
+
+### Completion Is Verified, Not Believed
+
+A model saying "done" is not success. Before a run is reported successful:
+
+- at least one action must have been carried out, and
+- every value the model reports must be one the application actually showed, either
+  extracted by the surface during the run or visible in the final observation. The
+  comparison ignores currency symbols and separators, so `$5,234.17` matches a screen
+  showing `5234.17`.
+
+Otherwise the run fails with `DISCOVERY_COMPLETION_UNVERIFIED`.
+
+**Known limitation.** A goal that reads nothing and changes nothing is accepted on the
+strength of the summary plus the fact that work happened, because there is no
+goal-specific condition to check it against yet. Generating that condition is Phase 8's
+job: compiling a run into a capability produces the checkpoint that makes success
+mechanically verifiable.
+
+### Discovery Evidence
+
+Every run gets a run ID and writes the same sanitized evidence a replay does, under
+`evidence/runs/<runId>/`. The event stream reads as the story of the run:
+
+```text
+discovery_started · policy_evaluated · action_started · action_completed
+observation_captured · model_request · model_decision · policy_evaluated
+action_started · action_completed · … · goal_completed
+```
+
+What is **never** written: an API key, a value the run typed in, a value it read out (only
+the output names), the text of an observation (only its length and a fingerprint), the
+prompt, the raw provider response, or any reasoning the model produced. A model decision
+is recorded as its type, the action it names, and the bounded one-line summary the schema
+already accepted:
+
+```json
+{
+  "event": "model_decision",
+  "step": 2,
+  "decisionType": "action",
+  "actionType": "click",
+  "action": "click \"Search Button\"",
+  "summary": "Submit the member search form"
+}
+```
+
+That is enforced structurally rather than by convention: `DiscoveryJournal` has no method
+that accepts a prompt, a transcript, or a provider response, so no call site can persist
+one. The in-memory trace does keep fill values, because Phase 8 needs them to decide what
+becomes a capability input, which is exactly why a trace is never serialized to disk or
+printed.
+
+### How The Model Is Used
+
+Anthropic is not required. The model boundary is one method:
+
+```ts
+interface LLMClient {
+  complete(request: ModelRequest): Promise<ModelResponse>;
+}
+```
+
+Two implementations satisfy it, and discovery cannot tell which it was handed:
+
+| Provider    | Where it runs  | Configuration                          |
+| ----------- | -------------- | -------------------------------------- |
+| `ollama`    | This machine   | `OLLAMA_BASE_URL`, `OLLAMA_MODEL`      |
+| `anthropic` | The hosted API | `ANTHROPIC_API_KEY`, `ANTHROPIC_MODEL` |
+
+Select one with `LLM_PROVIDER`. The default is `ollama`, so the repository is runnable
+with no account and no key. A provider is chosen only in `src/cli/llmClient.ts`; no SDK
+import appears anywhere else, which `tests/architecture.test.ts` enforces.
+
+Neither client ever returns anything but the text of the answer. Reasoning content is
+dropped at the boundary: the Anthropic client reads text blocks only, and the Ollama client
+reads the message content and never the separate field a reasoning model writes beside it.
+Provider exceptions are mapped onto domain codes (`MODEL_AUTHENTICATION_FAILED`,
+`MODEL_RATE_LIMITED`, `MODEL_TIMEOUT`, `MODEL_UNAVAILABLE`, `MODEL_REQUEST_REJECTED`,
+`MODEL_RESPONSE_EMPTY`) with fixed message text, because a provider error can quote the
+request it failed on and a request carries an authorization header.
+
+Cost is kept down deliberately: a compact observation plus at most five recent steps rather
+than a growing transcript, no screenshots, and a small output ceiling. A provider that can
+constrain its decoding to a JSON Schema is given one, derived from the same Zod schema that
+validates the answer, so there is no way for the grammar and the validator to disagree.
+That constrains shape only; the answer is still parsed and validated either way.
+
+### Running The Live Demo
+
+The controlled application is the demo member console at
+`tests/fixtures/member-lookup.html`. Serve it on a local port, then:
+
+```bash
+# With a local model (no key, no cost)
+ollama serve
+ollama pull llama3.1:8b
+
+LLM_PROVIDER=ollama \
+POLICY_ALLOWED_HOSTS=127.0.0.1:3100 \
+POLICY_ALLOWED_SCHEMES=http \
+npm run discover -- \
+  --goal "Look Up Demo Member 12345 And Read Their Savings Balance" \
+  --target http://127.0.0.1:3100/member-lookup.html \
+  --name "Demo Member Lookup"
+```
+
+To use Anthropic instead, set `LLM_PROVIDER=anthropic` and `ANTHROPIC_API_KEY`.
+
+Options: `--goal` (required), `--target` (required), `--name`, `--max-steps`, `--timeout`,
+`--headed`. Exit codes are `0` success, `1` failure, `3` blocked by policy, `4` escalation
+required. The structured result goes to stdout and run events to stderr, so
+`npm run discover -- … | jq` reads a single JSON document. No key and no value the run typed
+appears on either stream.
+
+The live path is the only thing in the repository that needs a model. The whole test suite
+mocks the `LLMClient` boundary and runs with no provider of any kind, so CI never spends a
+credit.
 
 ## Deterministic Replay
 
@@ -876,12 +1109,23 @@ Copy the example file and fill in what you need:
 cp .env.example .env
 ```
 
-| Variable            | Required | Default        | Purpose                                           |
-| ------------------- | -------- | -------------- | ------------------------------------------------- |
-| `ANTHROPIC_API_KEY` | No       | none           | Model access for discovery. Replay never uses it. |
-| `LOG_LEVEL`         | No       | `info`         | One of `debug`, `info`, `warn`, `error`.          |
-| `EVIDENCE_DIR`      | No       | `evidence`     | Where run evidence is written.                    |
-| `CAPABILITIES_DIR`  | No       | `capabilities` | Where capability artifacts are read and written.  |
+| Variable           | Required | Default        | Purpose                                          |
+| ------------------ | -------- | -------------- | ------------------------------------------------ |
+| `LOG_LEVEL`        | No       | `info`         | One of `debug`, `info`, `warn`, `error`.         |
+| `EVIDENCE_DIR`     | No       | `evidence`     | Where run evidence is written.                   |
+| `CAPABILITIES_DIR` | No       | `capabilities` | Where capability artifacts are read and written. |
+
+The model, used by discovery and by nothing else:
+
+| Variable               | Required             | Default                  | Purpose                                    |
+| ---------------------- | -------------------- | ------------------------ | ------------------------------------------ |
+| `LLM_PROVIDER`         | No                   | `ollama`                 | `ollama` or `anthropic`.                   |
+| `OLLAMA_BASE_URL`      | No                   | `http://127.0.0.1:11434` | Where the local runtime listens.           |
+| `OLLAMA_MODEL`         | No                   | `llama3.1:8b`            | Which local model answers.                 |
+| `ANTHROPIC_API_KEY`    | Only for `anthropic` | none                     | Hosted model access. Replay never uses it. |
+| `ANTHROPIC_MODEL`      | No                   | `claude-sonnet-5`        | Which hosted model answers.                |
+| `DISCOVERY_MAX_STEPS`  | No                   | `15`                     | Model decisions one run may carry out.     |
+| `DISCOVERY_TIMEOUT_MS` | No                   | `180000`                 | Wall-clock ceiling for one discovery run.  |
 
 Surface waiting budgets, all in milliseconds and all optional:
 
@@ -896,7 +1140,9 @@ Notes:
 - Configuration is validated on startup and fails fast with a message that names the
   offending variable and never echoes its value.
 - The API key is optional so that lint, tests, builds, and replay all run without
-  credentials. Commands that need it fail with an explicit message when it is absent.
+  credentials. Only `LLM_PROVIDER=anthropic` requires one, and it fails with an explicit
+  message when it is absent. The default provider is local, so nothing in the repository
+  needs an account.
 - `.env` is git-ignored. Only `.env.example` is committed, and it holds placeholders.
 - Relative paths resolve against the working directory.
 
@@ -914,6 +1160,7 @@ reported as present or absent and never printed.
 | Command                 | What It Does                                                      |
 | ----------------------- | ----------------------------------------------------------------- |
 | `npm run dev`           | Runs the CLI from source in watch mode, loading `.env` if present |
+| `npm run discover`      | Discovers a workflow with a model, see Workflow Discovery         |
 | `npm run replay`        | Replays a saved capability artifact, see Deterministic Replay     |
 | `npm run build`         | Compiles `src/` to `dist/` with type declarations                 |
 | `npm run lint`          | ESLint, warnings treated as failures                              |
@@ -1101,11 +1348,11 @@ run evidence are project deliverables.
 | 2     | Computer surface abstraction and the Playwright surface              | Done    |
 | 3     | Capability artifact schema, validation, serialization, and storage   | Done    |
 | 4     | Deterministic replay engine, replay CLI, real-browser replay proof   | Done    |
-| 5     | Anthropic integration, discovery loop, evidence, error taxonomy      | Next    |
-| 6     | Policy guardrails, escalation, human handoff                         | Planned |
-
-Exact commands for running discovery will be added under **Development Commands** as that
-phase lands.
+| 5     | Execution results, error taxonomy, business outcomes, recovery       | Done    |
+| 6     | Policy guardrails and sanitized run evidence                         | Done    |
+| 7     | LLM-driven discovery loop, provider abstraction, discovery CLI       | Done    |
+| 8     | Compiling a discovery trace into a capability artifact               | Next    |
+| 9     | Escalation into a live human handoff                                 | Planned |
 
 ## Design Notes
 

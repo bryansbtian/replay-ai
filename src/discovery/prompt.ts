@@ -1,0 +1,223 @@
+import type { Observation } from '../surfaces/index.js';
+
+import type { DiscoveredValue } from './DiscoveryTrace.js';
+
+/**
+ * Everything the model is told, in one place.
+ *
+ * It is a module rather than a string built inside the engine so that the instructions
+ * can be read, reviewed, and diffed like the rest of the system. A prompt is the part of
+ * an LLM application that changes behaviour most and is easiest to change by accident.
+ *
+ * It is also deliberately short. Rules the application can enforce are not written here:
+ * the action vocabulary is enforced by a schema, the destinations are enforced by policy,
+ * the step count is enforced by the loop guard, and none of them are things a model could
+ * grant itself by being asked nicely. What is left is what the model genuinely has to
+ * know: what it is looking at, what it may choose between, and how to say so.
+ */
+
+/** Roughly a screenful. Enough to tell two states apart, small enough to send every turn. */
+const MAX_OBSERVATION_TEXT = 1_500;
+
+/** Recent steps carried into the next prompt. Bounded, so cost does not grow with the run. */
+export const MAX_HISTORY_ENTRIES = 5;
+
+export const DISCOVERY_SYSTEM_PROMPT = `You are driving a real application through an automation surface in order to work out how a workflow is performed. You do not write code and you do not control the application directly. You choose one action at a time, and the system carries it out and shows you the result.
+
+Answer with exactly one JSON object and nothing else. No prose, no explanation outside the object, no markdown code fence. Any field not listed below is rejected and ends the run.
+
+Every answer has a top-level "type" of exactly "action", "complete", or "escalate".
+
+A target is always an object with a "description" and a "strategies" array. A strategy on its own is never a target. This is the mistake to avoid:
+
+WRONG: "target":{"kind":"role","role":"button","name":"Search"}
+RIGHT: "target":{"description":"Search Button","strategies":[{"kind":"role","role":"button","name":"Search"}]}
+
+These are complete answers. Copy their shape exactly.
+
+Click a control:
+{"type":"action","action":{"type":"click","target":{"description":"Search Button","strategies":[{"kind":"role","role":"button","name":"Search"},{"kind":"text","text":"Search"}]}},"summary":"Submit the member search form"}
+
+Type into a field:
+{"type":"action","action":{"type":"fill","target":{"description":"Member ID Field","strategies":[{"kind":"label","text":"Member ID"},{"kind":"placeholder","text":"Enter A Member ID"}]},"value":"12345"},"summary":"Enter the member reference"}
+
+Read a value the goal asks for:
+{"type":"action","action":{"type":"extract","target":{"description":"Savings Balance","strategies":[{"kind":"text","text":"Savings Balance"}]},"name":"savingsBalance"},"summary":"Read the savings balance"}
+
+Wait for a state to arrive:
+{"type":"action","action":{"type":"wait","condition":{"type":"textVisible","text":"Member Summary"}},"summary":"Wait for the member summary to load"}
+
+Go to a page:
+{"type":"action","action":{"type":"navigate","url":"https://example.test/members"},"summary":"Open the member list"}
+
+Report that the goal is met:
+{"type":"complete","summary":"The member summary is visible and shows the savings balance","outputs":{"savingsBalance":"5234.17"}}
+
+Ask for a person:
+{"type":"escalate","reason":"The application is asking to approve a payment, which I should not decide"}
+
+The only action types are navigate, click, fill, extract, and wait. There are no others.
+
+The only strategy kinds are: {"kind":"role","role":"button","name":"Search"}, {"kind":"label","text":"Member ID"}, {"kind":"placeholder","text":"Enter A Member ID"}, {"kind":"attribute","attribute":"data-testid","value":"member-search"}, {"kind":"text","text":"Member Summary"}, {"kind":"css","selector":"#member-id"}. Prefer role, label, and placeholder, because they survive a redesign. Use css only when the observation offers nothing else. A target must match exactly one control, so add a name or a label rather than describing a whole group.
+
+The only wait conditions are: {"type":"targetVisible","target":{"description":"...","strategies":[...]}}, {"type":"targetContainsText","target":{"description":"...","strategies":[...]},"text":"..."}, {"type":"textVisible","text":"..."}, {"type":"urlMatches","pattern":"^https://example\\\\.test/members"}.
+
+Rules:
+- Choose exactly one action per turn. React to what the observation actually shows.
+- Only target controls and text that appear in the observation. Do not guess at a control you have not seen.
+- After you submit a form or click something that loads a result, your next decision must be a wait for the state you expect. Results do not appear instantly, and the observation you are shown was taken the moment the action finished.
+- Never repeat an action you have already carried out. If the screen has not changed yet, wait for what you expect rather than doing it again. Repeating an action ends the run.
+- A wait must name the new thing you expect to appear, such as the heading of the result you asked for. Waiting for something already listed in the observation succeeds instantly and wastes the turn.
+- Work through the whole goal. Filling a field is not submitting it, and submitting is not reading the answer.
+- Use extract to read a value the goal asks for. Report the value you extracted, never a value you assumed.
+- If the value the goal asks for is already visible in the observation text, you may report it directly in a complete decision. Extracting it again is not required.
+- If an action fails, do not repeat it unchanged. Target the control a different way, or take a different route to the goal. The same action failing three times ends the run.
+- Give a target more than one strategy when the observation supports it, so a control that one strategy misses is still found.
+- Stay inside the application you were given. Do not navigate to an unrelated site.
+- Do not claim the goal is complete unless the current observation shows it. If you cannot see the result, keep working or escalate.
+- As soon as you have everything the goal asked for, answer with complete. Anything listed under Values Read So Far you already have; do not read it again.
+- Escalate when the application asks for something you should not decide: a permission, a payment, a confirmation of something irreversible, or a credential you were not given.
+- Never output executable code, a script, or a selector to be evaluated.
+- Never enter a password, token, or any secret. If the workflow needs one, escalate instead.`;
+
+export interface StepHistoryEntry {
+  readonly step: number;
+  /** The model's own summary of what it was doing. */
+  readonly summary: string;
+  /** What the surface did with it. */
+  readonly outcome: 'succeeded' | 'failed';
+  /** Short, already-safe rendering of a failure, so the next turn can react to it. */
+  readonly detail?: string;
+}
+
+export interface InstructionInput {
+  readonly goal: string;
+  readonly applicationName: string;
+  readonly entryPoint: string;
+  readonly step: number;
+  readonly maxSteps: number;
+  readonly observation: Observation;
+  /** Most recent last. The caller decides how many; see `MAX_HISTORY_ENTRIES`. */
+  readonly history: readonly StepHistoryEntry[];
+  readonly discovered: readonly DiscoveredValue[];
+  /**
+   * Whether this screen is the one the previous action left behind unchanged.
+   *
+   * The loop fingerprints every observation in order to detect a stuck run, so it already
+   * knows this and the model does not: a model is shown one screen at a time and cannot
+   * tell a page that never updated from a page that updated to look the same. Saying so is
+   * reporting a fact the application measured, and it is the difference between a model
+   * pressing the button again and waiting for the result it already asked for.
+   */
+  readonly stateUnchanged?: boolean;
+  /**
+   * Why the previous answer this turn was not a decision.
+   *
+   * Present only on a re-ask. It is the validator's own words about the shape of the
+   * object, never the rejected text, so nothing the model wrote is fed back to it as
+   * though the system had accepted it.
+   */
+  readonly rejection?: string;
+}
+
+function renderControls(observation: Observation): string {
+  if (observation.controls.length === 0) {
+    return '  (No Interactive Controls Were Detected)';
+  }
+  return observation.controls
+    .map((control) => {
+      if (control.enabled) {
+        return `  - ${control.role} "${control.name}"`;
+      }
+      return `  - ${control.role} "${control.name}" [disabled]`;
+    })
+    .join('\n');
+}
+
+function renderHistory(history: readonly StepHistoryEntry[]): string {
+  if (history.length === 0) {
+    return '  (Nothing Yet)';
+  }
+  return history
+    .map((entry) => {
+      if (entry.detail === undefined) {
+        return `  ${entry.step}. ${entry.summary} -> ${entry.outcome}`;
+      }
+      return `  ${entry.step}. ${entry.summary} -> ${entry.outcome}: ${entry.detail}`;
+    })
+    .join('\n');
+}
+
+function renderDiscovered(discovered: readonly DiscoveredValue[]): string {
+  if (discovered.length === 0) {
+    return '  (Nothing Read Yet)';
+  }
+  return discovered.map((value) => `  - ${value.name} = ${value.value}`).join('\n');
+}
+
+/**
+ * The one turn that changes.
+ *
+ * A compact state rather than a growing transcript: the goal, a bounded recent history,
+ * the values read so far, and the current screen. That is what the next decision actually
+ * depends on, and resending the whole conversation every turn would multiply the cost of
+ * a run by its length for information the model has already acted on.
+ */
+export function buildInstruction(input: InstructionInput): string {
+  const text = input.observation.textSummary.slice(0, MAX_OBSERVATION_TEXT);
+  const truncated = input.observation.textSummary.length > MAX_OBSERVATION_TEXT;
+
+  const lines = [
+    `Goal: ${input.goal}`,
+    `Application: ${input.applicationName} (${input.entryPoint})`,
+    `Step ${input.step} Of At Most ${input.maxSteps}`,
+    '',
+    'Recent Steps:',
+    renderHistory(input.history),
+    '',
+    'Values Read So Far:',
+    renderDiscovered(input.discovered),
+    '',
+    'Current Observation:',
+    `  URL: ${input.observation.url}`,
+    `  Title: ${input.observation.title}`,
+    '  Controls:',
+    renderControls(input.observation),
+    '  Visible Text:',
+    `${text}`,
+  ];
+
+  if (truncated || input.observation.truncated) {
+    lines.push('  (The Observation Was Truncated)');
+  }
+
+  if (input.stateUnchanged === true) {
+    lines.push(
+      '',
+      'This screen is identical to the one before your last action. The application has not responded yet, or your last action did nothing. Do not repeat that action. Wait for the state you are expecting, or choose a different approach.',
+    );
+  }
+
+  if (input.rejection !== undefined) {
+    lines.push(
+      '',
+      `Your previous answer was rejected: ${input.rejection}`,
+      'Answer again with one valid JSON decision and no other text.',
+    );
+    return lines.join('\n');
+  }
+
+  if (input.discovered.length > 0) {
+    // Stated at the point of decision rather than only in the standing rules. A value
+    // already read is the single strongest signal that the next answer should be a
+    // completion, and a small model reliably keeps acting unless it is said here.
+    const names = input.discovered.map((value) => value.name).join(', ');
+    lines.push(
+      '',
+      `You have already read: ${names}. If that is everything the goal asked for, answer with complete now and report those values in "outputs". Do not read them again.`,
+    );
+  }
+
+  lines.push('', 'Respond with one JSON decision.');
+  return lines.join('\n');
+}

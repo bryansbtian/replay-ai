@@ -2,6 +2,7 @@ import { loadConfig, toSafeConfig } from '../config/index.js';
 import { ReplayAiError } from '../errors.js';
 import { createLogger } from '../logging/logger.js';
 
+import { runDiscoverCommand } from './discover.js';
 import { runReplayCommand } from './replay.js';
 
 /** Mirrors the `version` field of package.json; asserted by tests. */
@@ -22,6 +23,13 @@ export const EXIT_BUSINESS_OUTCOME = 2;
  * investigating a defect.
  */
 export const EXIT_POLICY_BLOCKED = 3;
+/**
+ * A discovery run that needs a person: the model asked for one, or policy required an
+ * approval nobody can give yet. Distinct from a failure because the run did not go wrong,
+ * and distinct from a policy block because the answer is not "no" but "not without a
+ * decision somebody has to make". Phase 9 is what gives it somewhere to go.
+ */
+export const EXIT_ESCALATION_REQUIRED = 4;
 
 export interface CliDeps {
   readonly env: NodeJS.ProcessEnv;
@@ -36,19 +44,24 @@ Usage:
 
 Commands:
   config     Validate the environment and print the resolved configuration
+  discover   Work out how a goal is achieved in a live application, using a model
   replay     Replay a saved capability artifact against a real surface
   version    Print the CLI version
   help       Print this message
+
+Discovery:
+  replay-ai discover --goal "<what to achieve>" --target <url> [--headed]
 
 Replay:
   replay-ai replay --artifact <path> [--input name=value ...]
   replay-ai replay --capability <id>  [--input name=value ...]
 
 Exit codes:
-  0  Success            2  Business Outcome
+  0  Success            2  Business Outcome      4  Escalation Required
   1  Failure            3  Blocked By Policy
 
-Discovery arrives in a later phase.
+Discovery uses a model. Replay does not, and a successful discovery is not yet saved as
+a capability artifact.
 `;
 
 function printConfig(deps: CliDeps): number {
@@ -69,6 +82,23 @@ async function replayCommand(argv: readonly string[], deps: CliDeps): Promise<nu
   }
   if (result.status === 'businessOutcome') {
     return EXIT_BUSINESS_OUTCOME;
+  }
+  deps.stderr(`${result.code}: ${result.message}\n`);
+  if (result.kind === 'policy') {
+    return EXIT_POLICY_BLOCKED;
+  }
+  return EXIT_ERROR;
+}
+
+/** Maps a discovery outcome onto an exit code, see `EXIT_ESCALATION_REQUIRED`. */
+async function discoverCommand(argv: readonly string[], deps: CliDeps): Promise<number> {
+  const result = await runDiscoverCommand(argv, deps);
+  if (result.status === 'success') {
+    return EXIT_OK;
+  }
+  if (result.status === 'escalation') {
+    deps.stderr(`Escalation Required: ${result.reason}\n`);
+    return EXIT_ESCALATION_REQUIRED;
   }
   deps.stderr(`${result.code}: ${result.message}\n`);
   if (result.kind === 'policy') {
@@ -99,6 +129,8 @@ export async function runCli(argv: readonly string[], deps: CliDeps): Promise<nu
         return EXIT_OK;
       case 'config':
         return printConfig(deps);
+      case 'discover':
+        return await discoverCommand(argv.slice(1), deps);
       case 'replay':
         return await replayCommand(argv.slice(1), deps);
       default:

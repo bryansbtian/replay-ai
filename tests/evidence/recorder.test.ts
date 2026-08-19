@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, readdir, rm, chmod } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -271,13 +271,19 @@ describe('completing a run', () => {
   it('surfaces a manifest failure rather than producing a run directory that says nothing', async () => {
     const subject = recorder();
     await subject.start(START);
-    await chmod(subject.directory, 0o500);
+
+    // The manifest path is replaced by a non-empty directory, which no platform will let
+    // a file be renamed over. Permissions were the obvious way to provoke this and are
+    // not portable: Windows ignores the mode bits `chmod` sets, so the write succeeded
+    // there and the case proved nothing.
+    const manifest = join(subject.directory, 'metadata.json');
+    await rm(manifest, { force: true });
+    await mkdir(manifest);
+    await writeFile(join(manifest, 'occupied'), 'x');
 
     await expect(
       subject.complete({ status: 'success', durationMs: 1, completedSteps: 1, recoveries: 0 }),
     ).rejects.toBeInstanceOf(EvidenceWriteError);
-
-    await chmod(subject.directory, 0o700);
   });
 
   it('leaves no half-written manifest behind', async () => {

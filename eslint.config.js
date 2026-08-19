@@ -131,6 +131,40 @@ export default tseslint.config(
     },
   },
   {
+    // Architectural boundary: discovery is the one place with a model in its decision
+    // loop, and it depends on the generic LLM client rather than on a provider. Naming a
+    // provider directory here would put an SDK behind an interface that exists precisely
+    // so nothing above it has to know which one is configured. Composition roots under
+    // src/cli are what choose an implementation.
+    // Repeats the Playwright rule because a later block replaces the earlier one.
+    files: ['src/discovery/**/*.ts'],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        {
+          patterns: [
+            {
+              group: ['**/llm/anthropic', '**/llm/anthropic/**', '@anthropic-ai/*'],
+              message:
+                'discovery/ depends on the generic LLMClient: a provider is chosen by a composition root.',
+            },
+            {
+              group: ['**/llm/ollama', '**/llm/ollama/**'],
+              message:
+                'discovery/ depends on the generic LLMClient: a provider is chosen by a composition root.',
+            },
+            {
+              group: ['**/replay', '**/replay/**'],
+              message:
+                'discovery/ must not depend on the deterministic replay engine: a discovery trace is not an artifact.',
+            },
+            PLAYWRIGHT_ONLY_IN_ADAPTER,
+          ],
+        },
+      ],
+    },
+  },
+  {
     // Architectural boundary: the safety guardrail and the run record sit below
     // everything that executes anything, so a future discovery loop is held to the same
     // boundary rather than growing its own. Repeats the Playwright rule because a later

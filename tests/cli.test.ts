@@ -50,8 +50,18 @@ describe('runCli', () => {
   it('reports an unknown command on stderr with a non-zero exit code', async () => {
     const { deps, err } = harness();
 
-    expect(await runCli(['discover'], deps)).toBe(EXIT_ERROR);
-    expect(err()).toContain('Unknown command: discover');
+    expect(await runCli(['compile'], deps)).toBe(EXIT_ERROR);
+    expect(err()).toContain('Unknown command: compile');
+  });
+
+  it('routes discover to its own command and refuses an invocation with no goal', async () => {
+    // Phase 7 turned `discover` from an unknown command into a real one. It fails here on
+    // its own argument validation rather than on the command lookup, and it fails before
+    // reaching a model, so this case needs no provider of any kind.
+    const { deps, err } = harness();
+
+    expect(await runCli(['discover', '--target', 'http://127.0.0.1:3000'], deps)).toBe(EXIT_ERROR);
+    expect(err()).toContain('--goal is required');
   });
 
   it('emits a structured record for the config command without the API key', async () => {

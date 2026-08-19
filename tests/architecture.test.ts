@@ -173,6 +173,75 @@ describe('module boundaries', () => {
     }
   });
 
+  it('keeps discovery on the generic model boundary rather than on a provider', () => {
+    // The whole point of `LLMClient` is that the loop cannot tell which provider answered.
+    // A direct import of either implementation would quietly undo that, so the check is on
+    // the import graph rather than on anyone remembering the rule.
+    const violations: string[] = [];
+    for (const file of sourceFiles(join('src', 'discovery'))) {
+      for (const specifier of importsOf(file)) {
+        if (/(^|\/)llm\/(anthropic|ollama)(\/|$)/.test(specifier)) {
+          violations.push(`${file} imports ${specifier}`);
+        }
+        if (specifier.startsWith('@anthropic-ai/')) {
+          violations.push(`${file} imports ${specifier}`);
+        }
+      }
+    }
+
+    expect(violations).toEqual([]);
+  });
+
+  it('lets discovery reach the application only through the surface contract', () => {
+    // Same rule replay is held to. A discovery loop that could reach the adapter would be
+    // a loop that only works in a browser, and the surface abstraction would be decoration.
+    const specifiers = sourceFiles(join('src', 'discovery')).flatMap(importsOf);
+    const surfaceImports = new Set(
+      specifiers.filter((specifier) => specifier.includes('surfaces')),
+    );
+
+    expect([...surfaceImports]).toEqual(['../surfaces/index.js']);
+  });
+
+  it('keeps discovery independent of the replay engine', () => {
+    // A discovery trace is not a capability artifact, and Phase 8 is what turns one into
+    // the other. Discovery reaching into replay would be that compilation happening by
+    // accident, in the wrong phase and with nothing validating the result.
+    const violations: string[] = [];
+    for (const file of sourceFiles(join('src', 'discovery'))) {
+      for (const specifier of importsOf(file)) {
+        if (/(^|\/)replay(\/|$)/.test(specifier)) {
+          violations.push(`${file} imports ${specifier}`);
+        }
+      }
+    }
+
+    expect(violations).toEqual([]);
+  });
+
+  it('names a model provider in the llm layer and its composition roots, and nowhere else', () => {
+    // The strongest form of the isolation claim: an SDK import may appear in exactly the
+    // files whose job is to choose or wrap one.
+    const allowed = new Set([
+      join('src', 'llm', 'anthropic', 'AnthropicClient.ts'),
+      join('src', 'cli', 'llmClient.ts'),
+    ]);
+
+    const violations: string[] = [];
+    for (const file of sourceFiles('src')) {
+      if (allowed.has(file)) {
+        continue;
+      }
+      for (const specifier of importsOf(file)) {
+        if (specifier.startsWith('@anthropic-ai/')) {
+          violations.push(`${file} imports ${specifier}`);
+        }
+      }
+    }
+
+    expect(violations).toEqual([]);
+  });
+
   it('keeps the artifact contract independent of discovery, replay, and any model', () => {
     const violations: string[] = [];
     for (const file of sourceFiles(join('src', 'artifacts'))) {

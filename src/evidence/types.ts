@@ -31,6 +31,20 @@ export const RUN_EVENT_NAMES = [
   'recovery_exhausted',
   'screenshot_captured',
   'run_completed',
+  // Discovery. The two loops share the vocabulary where they share a moment (a policy
+  // decision is a policy decision), and name their own where they do not: a replay
+  // executes a stored step, a discovery run carries out an action a model just proposed.
+  'discovery_started',
+  'observation_captured',
+  'model_request',
+  'model_decision',
+  'model_response_invalid',
+  'action_started',
+  'action_completed',
+  'action_failed',
+  'goal_completed',
+  'escalation_requested',
+  'discovery_stopped',
 ] as const;
 
 export type RunEventName = (typeof RUN_EVENT_NAMES)[number];
@@ -47,8 +61,10 @@ export interface RunEvent {
   readonly fields?: Readonly<Record<string, unknown>>;
 }
 
-/** What is known about a run when it starts. */
-export interface RunStartRecord {
+/** What is known about a replay when it starts. */
+export interface ReplayStartRecord {
+  /** Optional on this arm so that a replay reads the way it always did. */
+  readonly kind?: 'replay';
   readonly runId: string;
   readonly capabilityId: string;
   readonly capabilityVersion: number;
@@ -59,13 +75,40 @@ export interface RunStartRecord {
 }
 
 /**
+ * What is known about a discovery run when it starts.
+ *
+ * There is no capability, because working out whether one exists is what the run is for.
+ * What it has instead is the goal it was given and where it started, which are the two
+ * things somebody reading the directory later needs in order to know what they are
+ * looking at.
+ */
+export interface DiscoveryStartRecord {
+  readonly kind: 'discovery';
+  readonly runId: string;
+  /** The operator's own words. Never a credential, and never a value read from a screen. */
+  readonly goal: string;
+  /** Where the run started, already sanitized. */
+  readonly target: string;
+  readonly policy: PolicySummary;
+}
+
+/**
+ * What a run says about itself when it starts.
+ *
+ * A union rather than a bag of optional fields, so that neither kind of run can be
+ * recorded with half of the other one's identity.
+ */
+export type RunStartRecord = ReplayStartRecord | DiscoveryStartRecord;
+
+/**
  * How a run ended, in evidence terms.
  *
  * Mirrors the replay result contract without importing it, so that the evidence package
  * stays below replay and a future discovery run can be recorded the same way.
  */
 export interface RunOutcomeRecord {
-  readonly status: 'success' | 'businessOutcome' | 'failure';
+  /** `escalation` belongs to discovery: a run that needs a person has not failed. */
+  readonly status: 'success' | 'businessOutcome' | 'failure' | 'escalation';
   readonly code?: string;
   readonly kind?: string;
   readonly stepId?: string;
