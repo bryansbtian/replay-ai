@@ -36,7 +36,13 @@ export class DiscoveryJournal {
     this.evidence = options.evidence;
   }
 
-  /** The run's own start is bracketed by the recorder, which writes the manifest. */
+  /**
+   * The run's own start, as a log line only.
+   *
+   * The recorder already writes a `discovery_started` event when the composition root
+   * hands it the run's identity, so emitting one here would put the same moment in the
+   * stream twice and leave a reader wondering which was authoritative.
+   */
   started(fields: JournalFields): void {
     this.logger.info('Discovery Started', fields);
   }

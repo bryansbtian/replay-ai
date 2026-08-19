@@ -14,6 +14,20 @@ import { issuesOf, validArtifact } from './support/artifacts.js';
 
 const EXAMPLE_PATH = join('capabilities', 'examples', 'lookup-demo-customer.json');
 
+/**
+ * Reads a committed file with its line endings normalized.
+ *
+ * The serializer emits `\n`, and a Windows checkout configured with `core.autocrlf`
+ * hands back `\r\n` for the same committed bytes. Comparing raw would test which
+ * platform ran the suite rather than whether the artifact is canonical, so the newline
+ * convention is normalized and everything else about the document is still compared
+ * exactly: key order, indentation, spacing, and the trailing newline all still have to
+ * match what `serializeCapabilityArtifact` produces.
+ */
+function readCommitted(path: string): string {
+  return readFileSync(path, 'utf8').replace(/\r\n/g, '\n');
+}
+
 describe('serializeCapabilityArtifact', () => {
   it('round trips an artifact unchanged', () => {
     const artifact = parseCapabilityArtifact(validArtifact());
@@ -92,7 +106,7 @@ describe('deserializeCapabilityArtifact', () => {
 
 describe('the committed example artifact', () => {
   it('parses, and is already in the canonical serialized form', () => {
-    const json = readFileSync(EXAMPLE_PATH, 'utf8');
+    const json = readCommitted(EXAMPLE_PATH);
 
     const artifact = deserializeCapabilityArtifact(json, { source: EXAMPLE_PATH });
 

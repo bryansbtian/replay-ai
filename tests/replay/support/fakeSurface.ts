@@ -28,8 +28,25 @@ export interface RecordedCall {
   readonly timeoutMs?: number;
 }
 
+/** What a scripted screen shows. Everything absent falls back to a quiet default. */
+export interface FakeScreen {
+  readonly url?: string;
+  readonly title?: string;
+  readonly textSummary?: string;
+  readonly controls?: readonly { role: string; name: string; enabled: boolean }[];
+}
+
 export interface FakeBehavior {
   readonly url?: string;
+  /**
+   * What the surface shows when it is observed.
+   *
+   * Replay never asks, so it is absent from every replay suite. Discovery asks on every
+   * turn and decides from the answer, which is why the hook exists at all: a discovery
+   * suite scripts the screens a run walks through and asserts what the loop did about
+   * them.
+   */
+  observe?(): FakeScreen | Promise<FakeScreen>;
   navigate?(url: string): void | Promise<void>;
   click?(target: Target): void | Promise<void>;
   fill?(target: Target, value: string): void | Promise<void>;
@@ -75,19 +92,18 @@ export class FakeSurface implements ComputerSurface {
     return { action: 'navigate', durationMs: 1, url: this.url() };
   }
 
-  // Not `async`: a scripted surface has nothing to await, and the contract only asks
-  // for a promise.
-  observe(): Promise<Observation> {
+  async observe(): Promise<Observation> {
     this.record({ method: 'observe', subject: this.url() });
-    return Promise.resolve({
-      url: this.url(),
-      title: 'Fake Surface',
+    const screen = (await this.behavior.observe?.()) ?? {};
+    return {
+      url: screen.url ?? this.url(),
+      title: screen.title ?? 'Fake Surface',
       capturedAt: new Date().toISOString(),
-      textSummary: '',
+      textSummary: screen.textSummary ?? '',
       truncated: false,
-      controls: [],
+      controls: screen.controls ?? [],
       durationMs: 1,
-    });
+    };
   }
 
   async click(target: Target, options: SurfaceCallOptions = {}): Promise<ActionResult> {

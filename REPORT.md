@@ -187,6 +187,74 @@ executor, and the executor will import the artifact. A workflow can therefore be
 reviewed, diffed, and validated by a process that can neither open a browser nor call a
 model.
 
+## Why The Model Exists Only In Discovery
+
+The central claim of the system is that reasoning is a one-time cost. A model is expensive,
+slow, and non-deterministic; a workflow, once understood, is none of those things. So the
+model is spent once working out how a goal is achieved, and the result is executed
+afterwards by an engine with no model in it.
+
+That is a boundary, not an intention, and it is enforced three ways. `src/replay/` may not
+import `src/llm/` or `src/discovery/` under a scoped ESLint rule. `tests/architecture.test.ts`
+asserts the same thing from the import graph, so the build fails even if the lint config
+drifts. And a third test reads the recovery paths specifically, because that is the one
+place an LLM fallback would plausibly appear: the file that decides what to do about a
+failure is the file most likely to acquire an "ask the model" branch. Replay failing and
+then asking a model would collapse the distinction the project exists to demonstrate.
+
+## The Provider Abstraction
+
+`LLMClient` is one method that takes text and returns text. It knows nothing about goals,
+observations, decisions, or policy, which is what makes the isolation real rather than
+nominal: a second provider implements two shapes and one method and has nowhere to put a
+vendor concept.
+
+There are two implementations. `AnthropicClient` is the only file that imports the SDK.
+`OllamaClient` speaks to a model running on the operator's own machine over one HTTP POST
+with no SDK at all. Discovery imports neither; a composition root under `src/cli/` picks
+one from configuration, and a test asserts that an SDK import appears nowhere else in
+`src/`.
+
+Having two was worth the small cost, because one implementation cannot demonstrate that an
+abstraction abstracts anything. It also means the repository is runnable, and the live
+demonstration reproducible, with no account and no credential.
+
+Both clients return the text of the answer and nothing else. `ModelResponse` has no field
+for a raw body, a transcript, or reasoning, so there is no path by which one could reach
+evidence. That is a stronger guarantee than a rule saying not to persist them.
+
+## Structured Decisions Instead Of Generated Code
+
+The model never returns code. It returns one of three objects, validated against a Zod
+schema before anything acts on it, and the action vocabulary is derived from what
+`ComputerSurface` can actually do rather than from what a model might imagine. An action
+name nobody implemented fails validation instead of reaching a dispatch that would have to
+decide what to do with it.
+
+Every schema object is a `strictObject`. That is a typo guard, and it is also structural:
+there is no field in which a model could return a script, a selector to evaluate, or its
+own reasoning, so nothing downstream has to remember not to read one.
+
+A compile-time assertion ties the two vocabularies together. Every agent action type must
+also be a `CapabilityStepType`, because policy evaluates the latter; if an action were
+added that the guardrail had no name for, the constraint would stop compiling rather than
+let an action through a check that could not describe it.
+
+## How Observations Are Represented
+
+An observation is a bounded summary: URL, title, collapsed visible text, and the
+interactive controls with their roles, accessible names, and enabled state. Not raw HTML,
+not the DOM, not cookies or storage or headers.
+
+Three reasons, in order of weight. A full page would carry data nobody meant to send to a
+provider. It would cost more per turn than the decision is worth, and the cost is paid on
+every turn of every run. And it would be worse input: a model choosing between eleven named
+controls is doing an easier job than one reading a thousand lines of markup.
+
+The representation stays compatible with a surface that has no clean DOM, because it is
+expressed in roles and names rather than in elements. A surface driven by an accessibility
+tree or by coordinates can produce the same shape.
+
 # Artifact Schema
 
 A capability artifact is one workflow, frozen into a JSON document: the ordered steps,
@@ -753,6 +821,96 @@ not run, because a boundary that a dismissed dialog could clear would not be a b
 Policy is also re-evaluated on every retry rather than remembered, since an action being
 attempted twice is exactly the situation where a guardrail should be asked twice.
 
+## Bounding A Loop That Contains A Model
+
+Replay is bounded by the artifact it is executing: the steps are known, so the run is
+finite by construction. Discovery has no such guarantee, because what happens next is
+decided each turn by something that can be confidently wrong. Termination therefore has to
+be counted by the application, and none of the limits is visible to the model as something
+it could see, raise, or argue with.
+
+Five guards, each answering a different way a run fails to end: a step ceiling, a run
+deadline, the same action proposed repeatedly, the screen never changing, and proposed
+actions that cannot be carried out at all.
+
+The two loop detectors are worth stating precisely, because both are heuristics.
+
+**Repeated action** fingerprints the normalized action rather than the model's wording, so
+two decisions described differently that would operate the same control are recognized as
+the same thing. A `fill` contributes a digest of its value rather than the value, which
+answers the only question the guard asks (is this the same as last time?) without carrying
+somebody's reference into a log. The count is taken before the action runs, so a fourth
+identical click is refused rather than performed and then noticed.
+
+**Repeated state** fingerprints the sanitized observation: location, title, and the roles
+and names of the controls, with the page text included only as a digest. It recognizes an
+identical screen, not a screen that is equivalent in some deeper sense. A page carrying a
+clock, a session token in the path, or a rotating advertisement fingerprints differently
+every time, so a loop on one will run to the step limit instead. It was still worth having,
+because it catches the loop that actually happens, which is an action that changes nothing.
+
+One consequence had to be handled deliberately. An observation carries the controls on a
+screen and not the values in them, so `fill` and `extract` leave the fingerprint identical
+by design. The loop therefore tells the model that the screen is unchanged only after an
+action that should have changed it. Reporting it after a `fill` would be stating a fact
+about the observation model as though it were a fact about the application, and in practice
+it talked the model out of the correct next step.
+
+## Deadlines Across Two Kinds Of Slowness
+
+A discovery run can hang in two places: inside a model call, and inside a surface action.
+Checking elapsed time only between turns would bound neither. Both are wrapped in the same
+`withDeadline` guard replay already used, promoted to `src/execution/` when it acquired a
+second caller rather than copied, so there is one definition of the outer bound. Each call
+is given whatever is left of the run's budget, so a run cannot exceed its deadline by
+starting one more long operation just before it expires.
+
+## Normalizing Model Failures
+
+Discovery never sees an SDK exception. Each client maps its provider's failures onto the
+same six domain codes by type and status, never by matching message text, because wording
+belongs to the provider and a code is something this system promises. The engine then folds
+all of them into one result code, `DISCOVERY_MODEL_UNAVAILABLE`, with `kind: 'provider'`,
+which is the distinction a caller actually acts on: the model layer failed rather than the
+workflow.
+
+Message text is fixed per code rather than taken from the exception. A provider error can
+quote the request it failed on, and a request carries an authorization header. The original
+stays on `cause` for a debugger and is never rendered into anything printed or persisted.
+
+Retries are deliberately meagre. The Anthropic client allows one SDK-level retry for
+failures it already treats as transient. The loop allows one re-ask per turn, and only when
+the answer failed validation rather than the provider failing, because a small model that
+returned a nearly-right object usually returns a right one when told which field was wrong.
+A second invalid answer ends the run, so a model that cannot produce a decision cannot burn
+a budget proving it.
+
+## Why Constrained Decoding Is Not Trust
+
+A provider able to constrain its decoding to a JSON Schema is given one, generated from the
+same Zod schema that validates the answer so the grammar and the validator cannot disagree.
+This was not a nicety: without it, an 8B local model reliably produced plausible JSON with
+the fields in the wrong places, and the run died on validation rather than on anything
+about the application.
+
+It constrains shape and nothing else. A grammar cannot stop a model naming a control that
+is not on screen or claiming a balance the page never showed, so the answer is still parsed
+and still validated, and the schema remains the only thing that can produce a decision. A
+provider that ignores the field behaves exactly as before.
+
+## Verifying A Claimed Completion
+
+A model saying it is done is a claim about the world, and the world is available to check
+it against. Before a run is called successful, at least one action must have been carried
+out, and every value the model reports must be one the application actually showed: either
+extracted by the surface or visible in the final observation. The comparison drops currency
+symbols and separators, so a screen showing `5234.17` supports a reported `$5,234.17`
+without making two different balances equal.
+
+The gap is honest and documented: a goal that reads nothing and changes nothing is accepted
+on the strength of the summary plus the fact that work happened, because there is no
+goal-specific condition to check it against until Phase 8 compiles one.
+
 ## What Is Deferred
 
 To Phase 9:
@@ -803,16 +961,45 @@ out, and the artifact was kept extensible enough that leaving it out costs nothi
 
 # Escalation & Handoff
 
-Placeholder. `src/handoff/` is empty by design. Replay reports an outcome and stops;
-nothing yet decides that a person should take a session over. The Phase 2 decision to keep
-the browser session outside the surface is what will make that possible without a redesign,
-because no automation object believes it owns the session lifetime.
+`src/handoff/` is still empty: nothing pauses a session or hands one to a person. What
+Phase 7 added is the thing Phase 9 will build on, which is a run that can say it needs one.
 
-This section will eventually document:
+## Escalation Is A Result, Not An Exception
 
-- what triggers escalation: policy denial, low confidence, repeated failure, unknown state
-- what a paused run hands to a person, and in what form
-- how control returns, and whether a human correction can be folded back into an artifact
+`DiscoveryEscalation` is a third arm of the result union beside success and failure, rather
+than an error. A run that needs a person has not gone wrong: the session is still open, the
+trace is still valid, and the only thing missing is a decision nobody automated. Modelling
+it as a failure would put it in the same bucket as a broken locator and lose exactly the
+distinction an operator needs.
+
+Two things produce one, and the result says which:
+
+- **The model asked.** It returned `{"type":"escalate","reason":"…"}` because the
+  application wanted a permission, a payment, a confirmation of something irreversible, or
+  a credential it was not given.
+- **Policy required approval.** The guardrail answered `confirmationRequired`, which today
+  means no, because there is nobody to ask. The action is not performed.
+
+The escalation carries the run id, the reason, the step count, the last action, and the
+whole trace, which is the material a person would need in order to take over.
+
+## Why Phase 9 Does Not Need A Redesign
+
+The Phase 2 decision to keep the browser session outside the surface is what makes a live
+handoff possible: no automation object believes it owns the session lifetime, so the page
+the run was using can be given to a person and taken back. Discovery inherits that, because
+it drives a `ComputerSurface` it did not create and does not close.
+
+What is missing is only the mechanism: somewhere to send the request, a way for a person to
+answer, and a resumption path. None of that changes the shape of the result, which is why
+it was worth defining the result now.
+
+## The Model Cannot Escalate Its Way Around A Rule
+
+An escalation is a request for a person, never a way past the guardrail. A model that
+escalates gets a stopped run, not a retried action. The reverse also holds: policy denying
+an action is not something the model can appeal by escalating, because the run has already
+ended by then.
 
 # Safety
 
@@ -943,6 +1130,71 @@ and says nothing about the run is an observability failure worth hearing about r
 burying. The manifest is written through a temporary file and a rename, so a reader never
 finds half a JSON document; that is one extra call, not a transaction system.
 
+## The Guardrail Applies To The Model
+
+Phase 6 built the policy engine so that a stored step and a model-proposed action would
+describe themselves identically and be judged by the same code. Phase 7 is where that paid
+off: discovery calls the same `evaluate` with the same `PolicyContext`, and there is no
+discovery-specific policy, no second allowlist, and no path to the surface that skips it.
+The opening navigation to the target is checked too.
+
+Two details carry the weight.
+
+The declared risk handed to policy is **derived from the action**, never taken from the
+model. A model able to label its own action would be a model able to argue itself past a
+guardrail. It is set to `safe`, which is what an artifact step of the same type declares by
+default, so an action is judged the same way during discovery as it will be during replay.
+The two controls that actually matter for discovery do not depend on risk at all: the
+deployment says which action types it permits and which destinations may be reached.
+
+A model asserting safety has no standing. `"This action is safe"` is a sentence in a
+summary field bounded to 200 characters; the deployment's configuration is the authority. A
+test drives exactly that case, proposing a forbidden action with a reassuring summary, and
+asserts the surface was never called.
+
+## What A Discovery Run Writes Down
+
+Discovery writes the same sanitized evidence a replay does, and the interesting part is
+what it cannot write.
+
+`DiscoveryJournal` is the only way an event reaches the record, and it has no method that
+accepts a prompt, a transcript, a provider response, or an observation. A decision is
+recorded as its type, the action it names, and the bounded summary the schema already
+validated. There is therefore no call site, present or future, that could persist a raw
+provider body, which is a stronger guarantee than a policy saying not to.
+
+Specifically absent, each for its own reason:
+
+- **Reasoning.** Never requested, never read at the provider boundary, and with no field in
+  `ModelResponse` able to hold it. A model that emits reasoning beside its answer has that
+  content dropped before anything else in the system sees it.
+- **The prompt.** It contains the goal and the current screen. The record keeps the fact
+  that a request happened, its attempt number, and its budget.
+- **Fill values.** A model reference, a customer number, a search term. The trace keeps them
+  because Phase 8 needs them to decide what becomes a capability input, which is exactly why
+  a trace stays in memory and is never serialized or printed.
+- **Extracted values.** Only the output names are recorded. The values are the caller's
+  answer, returned to them, not written into a file that outlives the run.
+- **Observation text.** Recorded as a length and a fingerprint. A balance on screen is not
+  copied into evidence.
+
+Token counts are recorded as `inputSize` and `outputSize` rather than with the word "token"
+in the field name, because the shared redaction rule replaces any field whose name looks
+credential-bearing and a count is not one. Renaming the field was the right fix; loosening
+the rule was not.
+
+## Two Kinds Of Test, And Why Neither Needs A Key
+
+The whole automated suite mocks the `LLMClient` boundary and nothing below it. The policy
+engine, the surface contract, the loop guards, and the evidence recorder are all real, so a
+test asserting that a blocked action never reached the surface is an assertion about the
+real guardrail rather than about a stub that agreed with it.
+
+The live path is separate and is run by hand against the controlled demo application. CI
+never spends a credit, and nothing in the repository requires a provider to be configured.
+That split is deliberate: the assignment needs evidence from a genuine model-driven run,
+and there is no reason to pay for one on every pull request.
+
 ## What Came Before
 
 The credential handling from earlier phases, which is the part a public repository has to
@@ -1004,6 +1256,20 @@ Deliberate omissions so far, with the reasoning:
   than by a general layering tool that would need more configuration than it earns.
 - **No premature abstractions.** Directories that later phases will fill contain a README
   stating their responsibility and allowed dependencies, and no placeholder interfaces.
+- **No artifact compilation from a discovery trace.** Phase 7 stops at a successful,
+  evidenced run. Turning one into a capability means normalizing the steps that worked,
+  deciding which typed values become inputs, generating a success checkpoint, and proving
+  the result replays. Each of those is a decision worth making deliberately, and serializing
+  the trace would have produced an artifact that looked right and replayed by luck.
+- **No human handoff.** A run that needs a person returns a structured escalation and stops.
+  Nothing pauses, holds, or transfers a session.
+- **No screenshots during discovery.** The observation is text and structure. An image per
+  turn would multiply the cost of a run for information the accessibility tree already
+  carries on a web surface, and the recorder can still capture one when a surface without a
+  clean DOM makes it necessary.
+- **No token-budgeting subsystem.** Cost is controlled by a compact observation, a bounded
+  five-step history, no transcript growth, and a small output ceiling. Anything more would
+  be machinery in place of restraint.
 - **No `npm audit` gate in CI.** Advisories on transitive development dependencies would
   make CI fail for reasons unrelated to the change under review. Dependabot runs weekly
   instead, and `npm run audit` is available on demand.

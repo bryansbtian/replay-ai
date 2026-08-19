@@ -130,9 +130,12 @@ export class LoopGuard {
   /**
    * Counts an observation taken after an action.
    *
-   * An unchanged screen is not by itself wrong: filling a field changes a value the
-   * observation deliberately does not carry. Several in a row is the signal, which is why
-   * this counts consecutive repeats rather than raising on the first one.
+   * An unchanged screen is not by itself wrong, so this counts consecutive repeats rather
+   * than raising on the first one. It is also only asked about actions the screen should
+   * have answered: a `fill` or an `extract` leaves the observation identical by design,
+   * because it carries the controls on a screen and not the values in them, so the caller
+   * filters those out before they reach here rather than this guard learning what an
+   * observation does and does not represent.
    */
   recordState(fingerprint: string): LoopStop | undefined {
     if (this.lastState === fingerprint) {

@@ -17,6 +17,16 @@ export interface ModelRequest {
   readonly system: string;
   /** The one turn that varies: the goal, the recent history, and the current state. */
   readonly instruction: string;
+  /**
+   * JSON Schema the answer must satisfy, when the caller has one.
+   *
+   * A hint about the shape of the reply, not about its meaning, which is why it can live
+   * on a boundary that knows nothing about decisions. A provider able to constrain
+   * decoding to a schema will; one that cannot is free to ignore it, and neither case
+   * changes what the caller does next, because the answer is validated above this line
+   * either way. It makes a small model reliable rather than making any model trusted.
+   */
+  readonly responseSchema?: unknown;
   /** Ceiling on the answer. A structured decision is short, so this stays small. */
   readonly maxOutputTokens?: number;
   /** Ceiling on the call itself, normally what is left of the run's deadline. */

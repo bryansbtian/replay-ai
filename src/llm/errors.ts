@@ -48,3 +48,23 @@ export class ModelError extends ReplayAiError {
     return this.code as ModelFailureCode;
   }
 }
+
+/**
+ * The sentence a caller sees for each code, shared by every provider.
+ *
+ * Fixed text rather than the provider's own message. A provider error can quote the
+ * request that failed, and a request carries an authorization header, so nothing from
+ * the exception reaches a message. The original stays on `cause`.
+ *
+ * It lives beside the codes rather than inside one client so that a second provider
+ * cannot describe the same failure differently, which would make the two indistinguishable
+ * to somebody reading a log.
+ */
+export const MODEL_FAILURE_MESSAGES: Readonly<Record<ModelFailureCode, string>> = {
+  MODEL_AUTHENTICATION_FAILED: 'The model provider refused the configured credential.',
+  MODEL_RATE_LIMITED: 'The model provider is rate limiting this deployment.',
+  MODEL_TIMEOUT: 'The model did not answer within the allotted time.',
+  MODEL_UNAVAILABLE: 'The model provider could not be reached.',
+  MODEL_REQUEST_REJECTED: 'The model provider rejected the request.',
+  MODEL_RESPONSE_EMPTY: 'The model returned no text to act on.',
+};

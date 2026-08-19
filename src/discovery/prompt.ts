@@ -26,40 +26,56 @@ export const DISCOVERY_SYSTEM_PROMPT = `You are driving a real application throu
 
 Answer with exactly one JSON object and nothing else. No prose, no explanation outside the object, no markdown code fence. Any field not listed below is rejected and ends the run.
 
-There are three decisions.
+Every answer has a top-level "type" of exactly "action", "complete", or "escalate".
 
-1. Perform one action:
-{"type":"action","action":{...},"summary":"Why this action, in one short sentence"}
+A target is always an object with a "description" and a "strategies" array. A strategy on its own is never a target. This is the mistake to avoid:
 
-2. Report that the goal is met:
-{"type":"complete","summary":"What the application is showing that satisfies the goal","outputs":{"balance":"$1,234.56"}}
+WRONG: "target":{"kind":"role","role":"button","name":"Search"}
+RIGHT: "target":{"description":"Search Button","strategies":[{"kind":"role","role":"button","name":"Search"}]}
 
-3. Ask for a person:
-{"type":"escalate","reason":"Why you cannot safely continue"}
+These are complete answers. Copy their shape exactly.
 
-The actions available are exactly these:
+Click a control:
+{"type":"action","action":{"type":"click","target":{"description":"Search Button","strategies":[{"kind":"role","role":"button","name":"Search"},{"kind":"text","text":"Search"}]}},"summary":"Submit the member search form"}
 
-{"type":"navigate","url":"https://example.test/path"}
-{"type":"click","target":{...}}
-{"type":"fill","target":{...},"value":"text to type"}
-{"type":"extract","target":{...},"name":"camelCaseName"}
-{"type":"wait","condition":{...}}
+Type into a field:
+{"type":"action","action":{"type":"fill","target":{"description":"Member ID Field","strategies":[{"kind":"label","text":"Member ID"},{"kind":"placeholder","text":"Enter A Member ID"}]},"value":"12345"},"summary":"Enter the member reference"}
 
-A target names one control and lists the ways to find it, best first:
+Read a value the goal asks for:
+{"type":"action","action":{"type":"extract","target":{"description":"Savings Balance","strategies":[{"kind":"text","text":"Savings Balance"}]},"name":"savingsBalance"},"summary":"Read the savings balance"}
 
-{"description":"Member ID Field","strategies":[{"kind":"role","role":"textbox","name":"Member ID"},{"kind":"label","text":"Member ID"}]}
+Wait for a state to arrive:
+{"type":"action","action":{"type":"wait","condition":{"type":"textVisible","text":"Member Summary"}},"summary":"Wait for the member summary to load"}
 
-Strategies are: {"kind":"role","role":"button","name":"Search"}, {"kind":"label","text":"Member ID"}, {"kind":"placeholder","text":"Enter A Member ID"}, {"kind":"attribute","attribute":"data-testid","value":"member-search"}, {"kind":"text","text":"Member Summary"}, {"kind":"css","selector":"#member-id"}. Prefer role, label, and placeholder, because they survive a redesign. Use css only when the observation offers nothing else. A target must match exactly one control, so add a name or a label rather than describing a whole group.
+Go to a page:
+{"type":"action","action":{"type":"navigate","url":"https://example.test/members"},"summary":"Open the member list"}
 
-A wait condition is one of: {"type":"targetVisible","target":{...}}, {"type":"targetContainsText","target":{...},"text":"..."}, {"type":"textVisible","text":"..."}, {"type":"urlMatches","pattern":"^https://example\\\\.test/members"}.
+Report that the goal is met:
+{"type":"complete","summary":"The member summary is visible and shows the savings balance","outputs":{"savingsBalance":"5234.17"}}
+
+Ask for a person:
+{"type":"escalate","reason":"The application is asking to approve a payment, which I should not decide"}
+
+The only action types are navigate, click, fill, extract, and wait. There are no others.
+
+The only strategy kinds are: {"kind":"role","role":"button","name":"Search"}, {"kind":"label","text":"Member ID"}, {"kind":"placeholder","text":"Enter A Member ID"}, {"kind":"attribute","attribute":"data-testid","value":"member-search"}, {"kind":"text","text":"Member Summary"}, {"kind":"css","selector":"#member-id"}. Prefer role, label, and placeholder, because they survive a redesign. Use css only when the observation offers nothing else. A target must match exactly one control, so add a name or a label rather than describing a whole group.
+
+The only wait conditions are: {"type":"targetVisible","target":{"description":"...","strategies":[...]}}, {"type":"targetContainsText","target":{"description":"...","strategies":[...]},"text":"..."}, {"type":"textVisible","text":"..."}, {"type":"urlMatches","pattern":"^https://example\\\\.test/members"}.
 
 Rules:
 - Choose exactly one action per turn. React to what the observation actually shows.
 - Only target controls and text that appear in the observation. Do not guess at a control you have not seen.
-- After an action that submits or loads something, wait for the state you expect before acting on it.
+- After you submit a form or click something that loads a result, your next decision must be a wait for the state you expect. Results do not appear instantly, and the observation you are shown was taken the moment the action finished.
+- Never repeat an action you have already carried out. If the screen has not changed yet, wait for what you expect rather than doing it again. Repeating an action ends the run.
+- A wait must name the new thing you expect to appear, such as the heading of the result you asked for. Waiting for something already listed in the observation succeeds instantly and wastes the turn.
+- Work through the whole goal. Filling a field is not submitting it, and submitting is not reading the answer.
 - Use extract to read a value the goal asks for. Report the value you extracted, never a value you assumed.
+- If the value the goal asks for is already visible in the observation text, you may report it directly in a complete decision. Extracting it again is not required.
+- If an action fails, do not repeat it unchanged. Target the control a different way, or take a different route to the goal. The same action failing three times ends the run.
+- Give a target more than one strategy when the observation supports it, so a control that one strategy misses is still found.
 - Stay inside the application you were given. Do not navigate to an unrelated site.
 - Do not claim the goal is complete unless the current observation shows it. If you cannot see the result, keep working or escalate.
+- As soon as you have everything the goal asked for, answer with complete. Anything listed under Values Read So Far you already have; do not read it again.
 - Escalate when the application asks for something you should not decide: a permission, a payment, a confirmation of something irreversible, or a credential you were not given.
 - Never output executable code, a script, or a selector to be evaluated.
 - Never enter a password, token, or any secret. If the workflow needs one, escalate instead.`;
@@ -84,6 +100,24 @@ export interface InstructionInput {
   /** Most recent last. The caller decides how many; see `MAX_HISTORY_ENTRIES`. */
   readonly history: readonly StepHistoryEntry[];
   readonly discovered: readonly DiscoveredValue[];
+  /**
+   * Whether this screen is the one the previous action left behind unchanged.
+   *
+   * The loop fingerprints every observation in order to detect a stuck run, so it already
+   * knows this and the model does not: a model is shown one screen at a time and cannot
+   * tell a page that never updated from a page that updated to look the same. Saying so is
+   * reporting a fact the application measured, and it is the difference between a model
+   * pressing the button again and waiting for the result it already asked for.
+   */
+  readonly stateUnchanged?: boolean;
+  /**
+   * Why the previous answer this turn was not a decision.
+   *
+   * Present only on a re-ask. It is the validator's own words about the shape of the
+   * object, never the rejected text, so nothing the model wrote is fed back to it as
+   * though the system had accepted it.
+   */
+  readonly rejection?: string;
 }
 
 function renderControls(observation: Observation): string {
@@ -156,6 +190,34 @@ export function buildInstruction(input: InstructionInput): string {
   if (truncated || input.observation.truncated) {
     lines.push('  (The Observation Was Truncated)');
   }
+
+  if (input.stateUnchanged === true) {
+    lines.push(
+      '',
+      'This screen is identical to the one before your last action. The application has not responded yet, or your last action did nothing. Do not repeat that action. Wait for the state you are expecting, or choose a different approach.',
+    );
+  }
+
+  if (input.rejection !== undefined) {
+    lines.push(
+      '',
+      `Your previous answer was rejected: ${input.rejection}`,
+      'Answer again with one valid JSON decision and no other text.',
+    );
+    return lines.join('\n');
+  }
+
+  if (input.discovered.length > 0) {
+    // Stated at the point of decision rather than only in the standing rules. A value
+    // already read is the single strongest signal that the next answer should be a
+    // completion, and a small model reliably keeps acting unless it is said here.
+    const names = input.discovered.map((value) => value.name).join(', ');
+    lines.push(
+      '',
+      `You have already read: ${names}. If that is everything the goal asked for, answer with complete now and report those values in "outputs". Do not read them again.`,
+    );
+  }
+
   lines.push('', 'Respond with one JSON decision.');
   return lines.join('\n');
 }

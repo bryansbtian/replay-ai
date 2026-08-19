@@ -2,6 +2,7 @@ import { isAbsolute, resolve } from 'node:path';
 
 import { z } from 'zod';
 
+import { DEFAULT_LOOP_LIMITS } from '../discovery/index.js';
 import { ConfigurationError } from '../errors.js';
 import { LOG_LEVELS, type LogLevel } from '../logging/logger.js';
 import { policyConfigSchema, type PolicyConfig } from '../policy/index.js';
@@ -37,10 +38,56 @@ const commaSeparated = z.string().transform((value) => {
     .filter((entry) => entry.length > 0);
 });
 
+/**
+ * The model providers this deployment can be pointed at.
+ *
+ * Both implement the same one-method boundary, and discovery is handed one without being
+ * told which. Naming them here rather than in discovery is what keeps the choice a
+ * deployment decision instead of a code path.
+ */
+export const LLM_PROVIDERS = ['ollama', 'anthropic'] as const;
+
+export type LlmProvider = (typeof LLM_PROVIDERS)[number];
+
+/** Which model answers, and where it lives. Never carries a credential. */
+export interface LlmConfig {
+  readonly provider: LlmProvider;
+  readonly model: string;
+  /** Where a locally hosted provider listens. Absent for a hosted API. */
+  readonly baseUrl?: string;
+}
+
+/** What bounds a discovery run. The model cannot see or raise either of them. */
+export interface DiscoveryConfig {
+  readonly maxSteps: number;
+  readonly timeoutMs: number;
+}
+
 const envSchema = z.object({
   // Optional so that lint, tests and offline commands run without credentials.
   // Commands that call Anthropic obtain it through `requireAnthropicApiKey`.
   ANTHROPIC_API_KEY: z.string().min(1, 'must not be empty when set').optional(),
+  // Which implementation of the model boundary a discovery run is given. Defaulting to
+  // the local provider means the repository is runnable with no account and no key, and
+  // the hosted one is a variable away rather than a code change.
+  LLM_PROVIDER: z
+    .enum(LLM_PROVIDERS, { error: `must be one of ${LLM_PROVIDERS.join(', ')}` })
+    .default('ollama'),
+  // Model identifiers are configuration, never literals in application code. One per
+  // provider, because the two name their models nothing alike.
+  ANTHROPIC_MODEL: z.string().min(1, 'must not be empty').default('claude-sonnet-5'),
+  OLLAMA_MODEL: z.string().min(1, 'must not be empty').default('llama3.1:8b'),
+  // The loopback address rather than "localhost", which resolves to IPv6 first on
+  // Windows and reaches a daemon that is listening on IPv4 only.
+  OLLAMA_BASE_URL: z.url('must be an absolute URL').default('http://127.0.0.1:11434'),
+  // Discovery loop bounds. Defaults live with the loop guard so there is one source of
+  // truth for what a conservative limit is.
+  DISCOVERY_MAX_STEPS: z.coerce
+    .number({ error: 'must be a whole number of steps' })
+    .int('must be a whole number of steps')
+    .positive('must be greater than zero')
+    .default(DEFAULT_LOOP_LIMITS.maxSteps),
+  DISCOVERY_TIMEOUT_MS: timeoutMs.default(DEFAULT_LOOP_LIMITS.timeoutMs),
   // Custom messages throughout: the default issue text can echo the received value,
   // and an invalid value may itself be a secret.
   LOG_LEVEL: z
@@ -111,6 +158,19 @@ function toPolicyConfig(env: RawEnv): PolicyConfig {
   return parsed.data;
 }
 
+/**
+ * Resolves the model settings for the selected provider.
+ *
+ * Only the chosen provider's settings appear in the result, so a run cannot be handed a
+ * base URL belonging to a provider it is not using, and `SafeConfig` cannot print one.
+ */
+function toLlmConfig(env: RawEnv): LlmConfig {
+  if (env.LLM_PROVIDER === 'ollama') {
+    return { provider: 'ollama', model: env.OLLAMA_MODEL, baseUrl: env.OLLAMA_BASE_URL };
+  }
+  return { provider: 'anthropic', model: env.ANTHROPIC_MODEL };
+}
+
 export interface AppConfig {
   readonly logLevel: LogLevel;
   /** Absolute path to the directory holding run evidence. */
@@ -121,6 +181,10 @@ export interface AppConfig {
   readonly surfaceTimeouts: SurfaceTimeouts;
   /** What this deployment permits. The authority no artifact can overrule. */
   readonly policy: PolicyConfig;
+  /** Which model boundary implementation a discovery run is given. */
+  readonly llm: LlmConfig;
+  /** The bounds on a discovery run. */
+  readonly discovery: DiscoveryConfig;
   /** Present only when supplied; never logged or serialized. */
   readonly anthropicApiKey?: string;
 }
@@ -135,6 +199,8 @@ export type SafeConfig = {
   readonly capabilitiesDir: string;
   readonly surfaceTimeouts: SurfaceTimeouts;
   readonly policy: PolicyConfig;
+  readonly llm: LlmConfig;
+  readonly discovery: DiscoveryConfig;
   readonly anthropicApiKeyPresent: boolean;
 };
 
@@ -188,6 +254,11 @@ export function loadConfig(
       actionMs: parsed.data.SURFACE_ACTION_TIMEOUT_MS,
     },
     policy: toPolicyConfig(parsed.data),
+    llm: toLlmConfig(parsed.data),
+    discovery: {
+      maxSteps: parsed.data.DISCOVERY_MAX_STEPS,
+      timeoutMs: parsed.data.DISCOVERY_TIMEOUT_MS,
+    },
   };
 
   const apiKey = parsed.data.ANTHROPIC_API_KEY;
@@ -219,6 +290,8 @@ export function toSafeConfig(config: AppConfig): SafeConfig {
     capabilitiesDir: config.capabilitiesDir,
     surfaceTimeouts: config.surfaceTimeouts,
     policy: config.policy,
+    llm: config.llm,
+    discovery: config.discovery,
     anthropicApiKeyPresent: config.anthropicApiKey !== undefined,
   };
 }

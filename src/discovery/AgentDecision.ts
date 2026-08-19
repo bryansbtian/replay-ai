@@ -99,6 +99,25 @@ export const agentDecisionSchema = z.discriminatedUnion(
   { error: 'must be one of the supported decisions: action, complete, escalate' },
 );
 
+/**
+ * The decision schema as JSON Schema, for a provider that can constrain its decoding.
+ *
+ * Derived from the Zod schema rather than written out beside it, so there is one
+ * definition of what a decision is and no way for a grammar and a validator to drift into
+ * disagreeing. Built once at module load because it is the same on every call of every
+ * run.
+ *
+ * `io: 'input'` is what the model is being asked to produce, which is the shape before
+ * defaults are applied: `outputs` is optional to send and always present after parsing.
+ *
+ * This never replaces validation. A grammar constrains the shape of an answer and knows
+ * nothing about whether the control it names was on screen, so `parseAgentDecision`
+ * remains the only thing that can produce a decision.
+ */
+export const agentDecisionJsonSchema: unknown = z.toJSONSchema(agentDecisionSchema, {
+  io: 'input',
+});
+
 export type AgentAction = z.infer<typeof agentActionSchema>;
 export type AgentActionType = AgentAction['type'];
 export type AgentDecision = z.infer<typeof agentDecisionSchema>;
@@ -258,6 +277,20 @@ export function fingerprintAction(action: AgentAction): string {
     case 'wait':
       return `wait:${JSON.stringify(action.condition)}`;
   }
+}
+
+/**
+ * Whether this action is one the screen should visibly answer.
+ *
+ * `fill` and `extract` are not. An observation deliberately carries the controls on a
+ * screen and not the values in them, so typing into a field and reading text out of one
+ * both leave the observation identical by design. Telling a model that the application
+ * "has not responded" to those would be reporting a fact about the observation model as
+ * though it were a fact about the application, and it is exactly the sort of misleading
+ * feedback that talks a model out of the correct next step.
+ */
+export function shouldChangeScreen(action: AgentAction): boolean {
+  return action.type === 'navigate' || action.type === 'click' || action.type === 'wait';
 }
 
 /** How an action reads in a log line or an evidence record. Never carries a value. */

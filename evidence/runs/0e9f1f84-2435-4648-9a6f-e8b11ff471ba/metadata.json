@@ -1,0 +1,25 @@
+{
+  "runId": "0e9f1f84-2435-4648-9a6f-e8b11ff471ba",
+  "kind": "discovery",
+  "goal": "Look Up Demo Member 12345 And Read Their Savings Balance",
+  "target": "http://127.0.0.1:3100/member-lookup.html",
+  "policy": {
+    "allowedHosts": ["127.0.0.1:3100"],
+    "allowedSchemes": ["http"],
+    "allowedRoutes": [],
+    "allowedActions": ["navigate", "click", "fill", "extract", "wait", "checkpoint"],
+    "riskPolicy": {
+      "safe": "allow",
+      "risky": "requireConfirmation",
+      "irreversible": "block"
+    }
+  },
+  "startedAt": "2026-08-19T00:53:43.518Z",
+  "completedAt": "2026-08-19T00:54:05.340Z",
+  "status": "success",
+  "outputNames": ["savingsBalance"],
+  "durationMs": 21669,
+  "completedSteps": 4,
+  "recoveries": 0,
+  "warnings": []
+}

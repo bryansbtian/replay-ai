@@ -1,6 +1,6 @@
 import Anthropic from '@anthropic-ai/sdk';
 
-import { ModelError, type ModelFailureCode } from '../errors.js';
+import { MODEL_FAILURE_MESSAGES, ModelError, type ModelFailureCode } from '../errors.js';
 import type { LLMClient, ModelRequest, ModelResponse } from '../LLMClient.js';
 
 /**
@@ -67,8 +67,10 @@ function classify(error: unknown): ModelFailureCode {
     return 'MODEL_RATE_LIMITED';
   }
   if (error instanceof Anthropic.APIError) {
-    const status = error.status;
-    if (status !== undefined && status >= 500) {
+    // Read through `unknown`: the SDK types this field loosely, and a status is only
+    // worth branching on once it has been shown to be a number.
+    const status: unknown = error.status;
+    if (typeof status === 'number' && status >= 500) {
       return 'MODEL_UNAVAILABLE';
     }
     return 'MODEL_REQUEST_REJECTED';
@@ -76,25 +78,9 @@ function classify(error: unknown): ModelFailureCode {
   return 'MODEL_UNAVAILABLE';
 }
 
-/**
- * The sentence a caller sees for each code.
- *
- * Fixed text rather than the provider's message. A provider error can quote the request
- * that failed, and a request carries an authorization header, so the safe thing is for
- * nothing from the exception to reach a message. The original stays on `cause`.
- */
-const FAILURE_MESSAGES: Readonly<Record<ModelFailureCode, string>> = {
-  MODEL_AUTHENTICATION_FAILED: 'The model provider refused the configured credential.',
-  MODEL_RATE_LIMITED: 'The model provider is rate limiting this deployment.',
-  MODEL_TIMEOUT: 'The model did not answer within the allotted time.',
-  MODEL_UNAVAILABLE: 'The model provider could not be reached.',
-  MODEL_REQUEST_REJECTED: 'The model provider rejected the request.',
-  MODEL_RESPONSE_EMPTY: 'The model returned no text to act on.',
-};
-
 export function toModelError(error: unknown): ModelError {
   const code = classify(error);
-  return new ModelError(code, FAILURE_MESSAGES[code], { cause: error });
+  return new ModelError(code, MODEL_FAILURE_MESSAGES[code], { cause: error });
 }
 
 export class AnthropicClient implements LLMClient {
@@ -137,7 +123,7 @@ export class AnthropicClient implements LLMClient {
 
     const text = textOf(message);
     if (text === '') {
-      throw new ModelError('MODEL_RESPONSE_EMPTY', FAILURE_MESSAGES.MODEL_RESPONSE_EMPTY);
+      throw new ModelError('MODEL_RESPONSE_EMPTY', MODEL_FAILURE_MESSAGES.MODEL_RESPONSE_EMPTY);
     }
 
     return {
