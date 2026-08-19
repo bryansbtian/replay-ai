@@ -4,6 +4,7 @@ import { z } from 'zod';
 
 import { DEFAULT_LOOP_LIMITS } from '../discovery/index.js';
 import { ConfigurationError } from '../errors.js';
+import { DEFAULT_INTERVENTION_TIMEOUT_MS } from '../handoff/index.js';
 import { LOG_LEVELS, type LogLevel } from '../logging/logger.js';
 import { policyConfigSchema, type PolicyConfig } from '../policy/index.js';
 import { DEFAULT_SURFACE_TIMEOUTS, type SurfaceTimeouts } from '../surfaces/timeouts.js';
@@ -63,6 +64,13 @@ export interface DiscoveryConfig {
   readonly timeoutMs: number;
 }
 
+/** How a paused run reaches a person, and how long it waits for one. */
+export interface HandoffConfig {
+  readonly interventionTimeoutMs: number;
+  /** Zero means the operating system picks. */
+  readonly operatorPort: number;
+}
+
 const envSchema = z.object({
   // Optional so that lint, tests and offline commands run without credentials.
   // Commands that call Anthropic obtain it through `requireAnthropicApiKey`.
@@ -88,6 +96,17 @@ const envSchema = z.object({
     .positive('must be greater than zero')
     .default(DEFAULT_LOOP_LIMITS.maxSteps),
   DISCOVERY_TIMEOUT_MS: timeoutMs.default(DEFAULT_LOOP_LIMITS.timeoutMs),
+  // Human handoff. The timeout is generous because it is measuring how long it takes a
+  // person to notice, walk to the machine, and fix something, not how long a request takes.
+  HUMAN_INTERVENTION_TIMEOUT_MS: timeoutMs.default(DEFAULT_INTERVENTION_TIMEOUT_MS),
+  // Zero asks the operating system for a free port, which is what a local tool should do
+  // rather than fighting over a fixed one.
+  OPERATOR_PORT: z.coerce
+    .number({ error: 'must be a port number' })
+    .int('must be a port number')
+    .min(0, 'must be zero or a valid port')
+    .max(65_535, 'must be zero or a valid port')
+    .default(0),
   // Custom messages throughout: the default issue text can echo the received value,
   // and an invalid value may itself be a secret.
   LOG_LEVEL: z
@@ -185,6 +204,8 @@ export interface AppConfig {
   readonly llm: LlmConfig;
   /** The bounds on a discovery run. */
   readonly discovery: DiscoveryConfig;
+  /** How a paused run reaches a person. */
+  readonly handoff: HandoffConfig;
   /** Present only when supplied; never logged or serialized. */
   readonly anthropicApiKey?: string;
 }
@@ -201,6 +222,7 @@ export type SafeConfig = {
   readonly policy: PolicyConfig;
   readonly llm: LlmConfig;
   readonly discovery: DiscoveryConfig;
+  readonly handoff: HandoffConfig;
   readonly anthropicApiKeyPresent: boolean;
 };
 
@@ -259,6 +281,10 @@ export function loadConfig(
       maxSteps: parsed.data.DISCOVERY_MAX_STEPS,
       timeoutMs: parsed.data.DISCOVERY_TIMEOUT_MS,
     },
+    handoff: {
+      interventionTimeoutMs: parsed.data.HUMAN_INTERVENTION_TIMEOUT_MS,
+      operatorPort: parsed.data.OPERATOR_PORT,
+    },
   };
 
   const apiKey = parsed.data.ANTHROPIC_API_KEY;
@@ -292,6 +318,7 @@ export function toSafeConfig(config: AppConfig): SafeConfig {
     policy: config.policy,
     llm: config.llm,
     discovery: config.discovery,
+    handoff: config.handoff,
     anthropicApiKeyPresent: config.anthropicApiKey !== undefined,
   };
 }

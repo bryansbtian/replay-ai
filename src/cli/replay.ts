@@ -16,6 +16,8 @@ import { StaticPolicyEngine, summarizePolicy } from '../policy/index.js';
 import { ReplayEngine, type InvocationInputs, type ReplayResult } from '../replay/index.js';
 import { launchPlaywrightSession, PlaywrightSurface } from '../surfaces/playwright/index.js';
 
+import { startHandoff, type HandoffContext } from './handoff.js';
+
 /**
  * The `replay` command: run a saved capability against a real surface.
  *
@@ -34,6 +36,8 @@ Options:
   --capability <id>    Id of an artifact in the configured capabilities directory
   --input name=value   An invocation input, repeatable
   --headed             Run the browser with a visible window
+  --handoff            Pause for a person when the run cannot continue, and open the
+                       operator interface. Implies a visible browser window.
 `;
 
 /** A CLI argument problem, reported the same way every other typed failure is. */
@@ -51,6 +55,8 @@ interface ReplayArguments {
   readonly source: ArtifactSource;
   readonly inputs: ReadonlyMap<string, string>;
   readonly headless: boolean;
+  /** Ask for a person rather than failing on a state the workflow cannot clear. */
+  readonly handoff: boolean;
 }
 
 function requireValue(argv: readonly string[], index: number, flag: string): string {
@@ -66,6 +72,7 @@ export function parseReplayArguments(argv: readonly string[]): ReplayArguments {
   let artifactPath: string | undefined;
   let capabilityId: string | undefined;
   let headless = true;
+  let handoff = false;
 
   for (let index = 0; index < argv.length; index += 1) {
     const flag = argv[index];
@@ -91,6 +98,9 @@ export function parseReplayArguments(argv: readonly string[]): ReplayArguments {
       case '--headed':
         headless = false;
         break;
+      case '--handoff':
+        handoff = true;
+        break;
       default:
         throw new ReplayCommandError(`Unknown option: ${String(flag)}\n\n${USAGE}`);
     }
@@ -101,10 +111,10 @@ export function parseReplayArguments(argv: readonly string[]): ReplayArguments {
   }
 
   if (artifactPath !== undefined) {
-    return { source: { kind: 'path', path: artifactPath }, inputs, headless };
+    return { source: { kind: 'path', path: artifactPath }, inputs, headless, handoff };
   }
   if (capabilityId !== undefined) {
-    return { source: { kind: 'id', id: capabilityId }, inputs, headless };
+    return { source: { kind: 'id', id: capabilityId }, inputs, headless, handoff };
   }
   throw new ReplayCommandError(`Either --artifact or --capability is required.\n\n${USAGE}`);
 }
@@ -254,14 +264,36 @@ export async function runReplayCommand(
     policy: summarizePolicy(config.policy),
   });
 
-  const session = await launchPlaywrightSession({ headless: args.headless });
+  // A handoff means somebody operating the browser by hand, so the window has to be
+  // visible. Asking for one implies a headed run rather than silently producing a session
+  // nobody can reach.
+  const headless = args.headless && !args.handoff;
+  const session = await launchPlaywrightSession({ headless });
+
   let result: ReplayResult;
+  let handoff: HandoffContext | undefined;
   try {
     const surface = new PlaywrightSurface({
       page: session.page,
       logger,
       timeouts: config.surfaceTimeouts,
     });
+
+    if (args.handoff) {
+      handoff = await startHandoff(
+        {
+          config,
+          logger,
+          evidence,
+          surface,
+          runId,
+          automation: 'replay',
+          subject: artifact.name,
+        },
+        deps,
+      );
+    }
+
     const engine = new ReplayEngine({
       surface,
       logger,
@@ -269,9 +301,15 @@ export async function runReplayCommand(
       evidence,
       timeouts: config.surfaceTimeouts,
       replayId: runId,
+      ...(handoff !== undefined && { intervention: handoff.coordinator }),
     });
     result = await engine.run(artifact, inputs);
+    handoff?.finish(result.status);
   } finally {
+    // The browser closes only once the run is over. While a session is paused, under human
+    // control, or resuming, the run is still inside `engine.run`, so nothing here runs and
+    // the page a person is working in stays exactly where it is.
+    await handoff?.stop();
     await session.close();
   }
 

@@ -1,5 +1,9 @@
 import type { EvidenceRecorder } from '../evidence/index.js';
-import { DeadlineExceededError, withDeadline } from '../execution/index.js';
+import {
+  DeadlineExceededError,
+  withDeadline,
+  type InterventionHandler,
+} from '../execution/index.js';
 import { ModelError, type LLMClient } from '../llm/index.js';
 import type { Logger } from '../logging/logger.js';
 import { isAllowed, type PolicyDenied, type PolicyEngine } from '../policy/index.js';
@@ -113,6 +117,12 @@ export interface DiscoveryEngineOptions {
   /** Shared with the evidence directory, so a run and its record have one identity. */
   readonly runId: string;
   readonly limits?: LoopLimits;
+  /**
+   * Where the run asks for a person when the model says it should not decide something.
+   *
+   * Absent by default, in which case an escalation is terminal exactly as it was before.
+   */
+  readonly intervention?: InterventionHandler;
   /** Monotonic clock, injected in tests. */
   readonly now?: () => number;
 }
@@ -167,6 +177,7 @@ export class DiscoveryEngine {
   private readonly runId: string;
   private readonly limits: LoopLimits;
   private readonly now: (() => number) | undefined;
+  private readonly intervention: InterventionHandler | undefined;
 
   constructor(options: DiscoveryEngineOptions) {
     this.surface = options.surface;
@@ -180,6 +191,7 @@ export class DiscoveryEngine {
     this.runId = options.runId;
     this.limits = options.limits ?? DEFAULT_LOOP_LIMITS;
     this.now = options.now;
+    this.intervention = options.intervention;
   }
 
   /**
@@ -288,7 +300,19 @@ export class DiscoveryEngine {
       const decision = decided.decision;
 
       if (decision.type === 'escalate') {
-        return await this.escalate(context, decision.reason, 'model');
+        const handled = await this.offerIntervention(context, decision.reason);
+        if (handled.kind === 'escalated') {
+          return handled.result;
+        }
+        // A person changed the application while the run was paused, so everything the
+        // model was looking at is now a description of a screen that no longer exists.
+        // The next decision is taken from a fresh observation, and the turn is not spent.
+        observation = await this.observe();
+        fingerprint = fingerprintObservation(observation);
+        guard.seedState(fingerprint);
+        stateUnchanged = false;
+        step -= 1;
+        continue;
       }
 
       if (decision.type === 'complete') {
@@ -677,6 +701,50 @@ export class DiscoveryEngine {
       message: `${decision.code}: ${reason}`,
       lastAction: describeAction(action),
     });
+  }
+
+  /**
+   * Asks for a person, and says whether the run may carry on.
+   *
+   * An escalation is a request rather than a verdict. When somebody takes the session,
+   * resolves whatever the model would not decide, and hands it back, the honest answer is
+   * that the run continues; leaving it permanently marked as escalated would describe a
+   * run that needed help as one that never got any.
+   */
+  private async offerIntervention(
+    context: RunContext,
+    reason: string,
+    lastAction?: string,
+  ): Promise<{ kind: 'resumed' } | { kind: 'escalated'; result: DiscoveryEscalation }> {
+    const handler = this.intervention;
+    if (handler === undefined) {
+      return {
+        kind: 'escalated',
+        result: await this.escalate(context, reason, 'model', lastAction),
+      };
+    }
+
+    const outcome = await handler.request({
+      source: 'discovery',
+      reason: 'DISCOVERY_ESCALATION',
+      subject: context.request.goal,
+      code: 'DISCOVERY_ESCALATION_REQUESTED',
+      detail: reason,
+    });
+
+    if (outcome.status !== 'resolved') {
+      await handler.settle({ resumed: false, detail: outcome.reason });
+      return {
+        kind: 'escalated',
+        result: await this.escalate(context, reason, 'model', lastAction),
+      };
+    }
+
+    // Discovery has no stored step whose condition could be checked, and asking the model
+    // whether a person fixed things would be replacing evidence with an opinion. What it
+    // does instead is look again, which is the same thing it does every other turn.
+    await handler.settle({ resumed: true });
+    return { kind: 'resumed' };
   }
 
   private async escalate(

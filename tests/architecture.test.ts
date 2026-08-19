@@ -173,6 +173,43 @@ describe('module boundaries', () => {
     }
   });
 
+  it('keeps the handoff domain free of the engines that ask it for a person', () => {
+    // Control transfer is about who may act, not about what they were doing. A handoff
+    // module that imported the replay engine would be one that could only hand over a
+    // replay, and the same mechanism serves discovery.
+    const violations: string[] = [];
+    for (const directory of ['handoff', 'operator']) {
+      for (const file of sourceFiles(join('src', directory))) {
+        for (const specifier of importsOf(file)) {
+          if (/(^|\/)(llm|discovery|replay|compilation)(\/|$)/.test(specifier)) {
+            violations.push(`${file} imports ${specifier}`);
+          }
+          if (PLAYWRIGHT_PATTERN.test(specifier) || specifier.startsWith('@anthropic-ai/')) {
+            violations.push(`${file} imports ${specifier}`);
+          }
+        }
+      }
+    }
+
+    expect(violations).toEqual([]);
+  });
+
+  it('lets replay ask for a person through one interface rather than through the handoff domain', () => {
+    // The seam is `execution/intervention`, which is two methods. Replay importing the
+    // session registry or the operator server would couple the executor to how a person is
+    // reached, and a scheduled run has nobody to reach.
+    const violations: string[] = [];
+    for (const file of sourceFiles(join('src', 'replay'))) {
+      for (const specifier of importsOf(file)) {
+        if (/(^|\/)(handoff|operator)(\/|$)/.test(specifier)) {
+          violations.push(`${file} imports ${specifier}`);
+        }
+      }
+    }
+
+    expect(violations).toEqual([]);
+  });
+
   it('keeps compilation deterministic, with no model anywhere in it', () => {
     // The project's claim is that a model discovers a workflow once and deterministic code
     // executes it forever after. A compiler that called a model would put one back in the

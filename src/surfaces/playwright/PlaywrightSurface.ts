@@ -1,6 +1,7 @@
 import type { Locator, Page } from 'playwright';
 
 import type { Logger } from '../../logging/logger.js';
+import { sanitizeUrl } from '../../redaction.js';
 import type { ComputerSurface } from '../ComputerSurface.js';
 import {
   ActionFailedError,
@@ -16,6 +17,8 @@ import type {
   ExtractionKind,
   ExtractionOptions,
   ExtractionResult,
+  HumanAction,
+  HumanControlSurface,
   LocatorStrategyKind,
   Observation,
   ScreenshotResult,
@@ -24,6 +27,7 @@ import type {
   Target,
 } from '../types.js';
 
+import { beginHumanControl, type HumanControlSession } from './humanControl.js';
 import { LocatorResolver, type ResolvedTarget } from './LocatorResolver.js';
 import { observePage } from './observation.js';
 
@@ -75,11 +79,12 @@ function textTarget(text: string): Target {
   return { description: `Text "${text}"`, strategies: [{ kind: 'text', text }] };
 }
 
-export class PlaywrightSurface implements ComputerSurface {
+export class PlaywrightSurface implements ComputerSurface, HumanControlSurface {
   private readonly page: Page;
   private readonly logger: Logger;
   private readonly timeouts: SurfaceTimeouts;
   private readonly resolver: LocatorResolver;
+  private humanControl: HumanControlSession | undefined;
 
   constructor(options: PlaywrightSurfaceOptions) {
     this.page = options.page;
@@ -90,6 +95,32 @@ export class PlaywrightSurface implements ComputerSurface {
       timeoutMs: this.timeouts.locatorMs,
       logger: this.logger,
     });
+  }
+
+  /**
+   * Hands this session to a person and starts watching what they do.
+   *
+   * Nothing is created. The page a person operates is the one this surface has been driving
+   * all along, which is what makes the handoff a transfer of control rather than a fresh
+   * browser that happens to point at the same URL.
+   */
+  async beginHumanControl(onAction: (action: HumanAction) => void): Promise<void> {
+    this.ensureAvailable();
+    if (this.humanControl !== undefined) {
+      return;
+    }
+    this.humanControl = await beginHumanControl(this.page, onAction);
+    this.logger.info('Human Control Started', { url: sanitizeUrl(this.page.url()) });
+  }
+
+  async endHumanControl(): Promise<void> {
+    const session = this.humanControl;
+    if (session === undefined) {
+      return;
+    }
+    this.humanControl = undefined;
+    await session.stop();
+    this.logger.info('Human Control Ended', {});
   }
 
   async navigate(url: string, options: SurfaceCallOptions = {}): Promise<ActionResult> {

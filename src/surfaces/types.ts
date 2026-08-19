@@ -231,6 +231,50 @@ export interface Observation {
   readonly durationMs: number;
 }
 
+/**
+ * Something a person did to the application while they held control.
+ *
+ * Deliberately coarse. A person operating a browser directly produces DOM events, not the
+ * semantic targets automation works in, so this records what can be observed honestly:
+ * what kind of interaction it was, the best label available for what it touched, and where
+ * it happened. It is evidence of an intervention, not a recording that could be replayed.
+ *
+ * There is no field for a value. A person typing during a handoff is usually typing the
+ * thing that made automation stop, which is a verification code or a credential.
+ */
+export interface HumanAction {
+  readonly actionType: 'click' | 'fill' | 'navigate';
+  /** The accessible name, label, or nearest text for what was touched. Never a value. */
+  readonly target?: string;
+  /** The element's role or tag, when the page offered one. */
+  readonly role?: string;
+  /** Sanitized location at the moment of the action. */
+  readonly url: string;
+  readonly at: string;
+}
+
+/**
+ * A surface that can be handed to a person and taken back.
+ *
+ * Separate from `ComputerSurface` because it is a property of an implementation rather
+ * than of the contract: a headed browser can be operated by somebody, and a surface driving
+ * a device over an API cannot. The handoff domain asks whether the surface it was given
+ * supports this, and says so plainly when it does not.
+ */
+export interface HumanControlSurface {
+  /**
+   * Makes the live session available to a person and starts recording what they do.
+   *
+   * Never opens anything. The session a person takes over is the one automation was
+   * already using, which is the entire point: its cookies, its history, its half-filled
+   * form, and its current page.
+   */
+  beginHumanControl(onAction: (action: HumanAction) => void): Promise<void>;
+
+  /** Stops recording and hands the session back. The session itself is untouched. */
+  endHumanControl(): Promise<void>;
+}
+
 export interface ScreenshotResult {
   readonly format: 'png';
   readonly data: Uint8Array;

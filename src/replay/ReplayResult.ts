@@ -72,6 +72,10 @@ export const ENGINE_FAILURE_CODES = [
   'REPLAY_RECOVERY_EXHAUSTED',
   /** The surface itself went away mid-run. */
   'REPLAY_SURFACE_UNAVAILABLE',
+  /** A person took control and ended the run rather than letting it continue. */
+  'REPLAY_INTERVENTION_ABORTED',
+  /** The run asked for a person and nobody was able to take it. */
+  'REPLAY_INTERVENTION_UNAVAILABLE',
   /** Genuinely unclassifiable. Never a bucket for failures nobody mapped. */
   'REPLAY_UNEXPECTED_STATE',
 ] as const;
@@ -115,6 +119,14 @@ export interface ReplayStepRecord {
   /** How many times the step was executed, including the one that succeeded. */
   readonly attempts: number;
   readonly durationMs: number;
+  /**
+   * The step was completed by a person during a handoff rather than by the engine.
+   *
+   * Recorded because a result that looks identical whether a workflow ran unaided or
+   * needed somebody to intervene is a result that hides the thing most worth knowing about
+   * the run.
+   */
+  readonly resolvedByHuman?: boolean;
 }
 
 /** One recognized condition, and what the declared recovery for it did about it. */

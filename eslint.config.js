@@ -127,10 +127,14 @@ export default tseslint.config(
                 '**/discovery/**',
                 '**/compilation',
                 '**/compilation/**',
+                '**/handoff',
+                '**/handoff/**',
+                '**/operator',
+                '**/operator/**',
                 '@anthropic-ai/*',
               ],
               message:
-                'replay/ must not depend on llm/, discovery/, or compilation/: replay is a standalone consumer of validated artifacts.',
+                'replay/ must not depend on llm/, discovery/, compilation/, or handoff/: it asks for a person through execution/intervention, which is one interface.',
             },
             PLAYWRIGHT_ONLY_IN_ADAPTER,
           ],
@@ -188,6 +192,38 @@ export default tseslint.config(
               group: ['**/llm', '**/llm/**', '@anthropic-ai/*'],
               message:
                 'compilation/ must be deterministic: turning a trace into an artifact never asks a model.',
+            },
+            PLAYWRIGHT_ONLY_IN_ADAPTER,
+          ],
+        },
+      ],
+    },
+  },
+  {
+    // Architectural boundary: the handoff domain owns control transfer and nothing else. It
+    // is handed a surface it cannot identify, so it may not reach a browser library, and it
+    // must not contain the business logic of either engine that asks it for a person.
+    // Repeats the Playwright rule because a later block replaces the earlier one.
+    files: ['src/handoff/**/*.ts', 'src/operator/**/*.ts'],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        {
+          patterns: [
+            {
+              group: [
+                '**/llm',
+                '**/llm/**',
+                '**/discovery',
+                '**/discovery/**',
+                '**/replay',
+                '**/replay/**',
+                '**/compilation',
+                '**/compilation/**',
+                '@anthropic-ai/*',
+              ],
+              message:
+                'handoff/ and operator/ transfer control: they may not depend on the engines that ask them to, nor on a model SDK.',
             },
             PLAYWRIGHT_ONLY_IN_ADAPTER,
           ],
