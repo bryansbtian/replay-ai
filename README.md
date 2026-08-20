@@ -21,10 +21,6 @@ npm ci
 npx playwright install chromium
 ```
 
-`npm ci` installs exactly what `package-lock.json` records, so every machine and CI get the
-same tree. Use `npm install` only to add, remove, or upgrade a dependency, and commit the
-updated lockfile.
-
 For live discovery, pull the default model and confirm the daemon is on loopback:
 
 ```bash
@@ -34,11 +30,6 @@ ollama pull gemma3:27b
 The daemon should listen on `http://127.0.0.1:11434`.
 
 ## Run Locally
-
-There is no long-running server. The CLI is the product: `discover` uses Ollama, `replay`
-does not. List every host you will open in `POLICY_ALLOWED_HOSTS` in `.env`. SeatPing is
-one more host on that list, not a special command. Do not log in, join a queue, book a
-table, or submit anything. CI does not load `.env` and never automates the live site.
 
 ### Discover
 
@@ -166,13 +157,6 @@ Output goes to `dist/`. There is no `start` script: invoke the built CLI with `n
 | `npm run test:watch`    | The same suite in watch mode                                                                | Chromium |
 | `npm run test:coverage` | Everything, plus the 70% gate                                                               | Chromium |
 | `npm run test:e2e`      | Playwright runner spawning the published CLI as a subprocess                                | Chromium |
-
-**Running Without Live Services.** Everything except the discovery demo can be exercised
-with no network and no model. `npm run serve:fixtures` serves the controlled member console
-at `http://127.0.0.1:3100/member-lookup.html`, and the suites drive the real engines and a
-real browser against it: business outcomes, declared recoveries, hard failures, policy
-blocks, and the full human handoff. Discovery E2E scripts a local stub that speaks Ollama's
-chat endpoint. Replay E2E is given no model at all. Neither suite replaces the live SeatPing run.
 
 ## Common Commands
 
