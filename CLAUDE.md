@@ -1,13 +1,15 @@
 # Replay AI
 
-Computer-use automation system that uses an LLM to discover UI workflows, saves successful workflows as reusable capability artifacts, and deterministically replays them without an LLM in the decision loop.
+Computer-use automation that discovers a UI workflow with a local LLM once, saves the
+successful path as a typed capability artifact, and deterministically replays it with no
+model in the decision loop.
 
 ## Architecture
 
 Keep these boundaries clear:
 
 - `discovery/`: LLM-driven workflow discovery
-- `llm/`: Anthropic integration
+- `llm/`: Local Ollama integration
 - `artifacts/`: Capability schemas, validation, and storage
 - `replay/`: Deterministic execution of saved capabilities
 - `surfaces/`: Computer interaction abstraction and implementations
@@ -17,14 +19,21 @@ Keep these boundaries clear:
 - `execution/`: Shared execution models
 - `cli/`: User-facing commands
 
-`replay/` must never depend on `llm/`.
+`replay/` must never depend on `llm/`. Replay executes a saved capability with no model in
+the decision loop.
+
+`discovery/` must never depend on Playwright. It drives a `ComputerSurface`.
+
+`artifacts/` must never depend on discovery, replay, or a model runtime. The artifact is
+the contract between those sides.
 
 Prefer simple, well-defined boundaries over unnecessary abstractions or infrastructure.
 
 ## Non-Negotiable Style Rules
 
 - Never use em dashes.
-- Always use Title Case for user-facing titles and labels, especially frontend content such as `Workflow Job Title`, `Workflow Steps`, and section headings.
+- Always use Title Case for user-facing titles and labels, especially frontend content such
+  as `Workflow Job Title`, `Workflow Steps`, and section headings.
 - Never use ternary operators.
 - Always use curly braces for `if` statements, even for single statements.
 
@@ -55,9 +64,11 @@ await retry(action);
 
 - Use strict TypeScript and avoid `any`.
 - Prefer readable control flow over clever or compact code.
-- Keep Anthropic-specific logic isolated from core domain logic.
-- Keep secrets, credentials, tokens, and sensitive data out of source code, artifacts, logs, and tests.
-- Do not add infrastructure, dependencies, interfaces, or abstractions without a concrete need.
+- Keep third-party and vendor-specific logic isolated from core domain logic.
+- Keep secrets, credentials, tokens, and sensitive data out of source code, logs, stored
+  files, and tests.
+- Do not add infrastructure, dependencies, interfaces, or abstractions without a concrete
+  need.
 - Add tests for meaningful behavior and failure cases.
 - Keep changes scoped to the task being implemented.
 - Update documentation when behavior or architecture changes.
@@ -75,4 +86,5 @@ npm run test:coverage
 npm run build
 ```
 
-Review the final diff for unnecessary code, unused dependencies, style violations, secrets, and accidental scope expansion.
+Review the final diff for unnecessary code, unused dependencies, style violations, secrets,
+and accidental scope expansion.

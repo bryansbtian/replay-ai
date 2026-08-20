@@ -9,6 +9,7 @@ package-lock.json
 # Reformatting them here would break the guarantee that a saved artifact is byte
 # identical to what the serializer produces.
 capabilities/**/*.json
+tests/fixtures/capabilities/*.json
 
 # Run evidence is written by the recorder, and a manifest is a record of what a run did.
 # Reformatting one would make the committed file disagree with what the recorder produces,

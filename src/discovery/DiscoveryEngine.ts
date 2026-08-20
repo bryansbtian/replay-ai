@@ -355,6 +355,22 @@ export class DiscoveryEngine {
       history.push(toHistoryEntry(step, decision.summary, performed.outcome));
 
       const after = await this.observe();
+
+      // Where the action actually left the run, checked against the same allowlist that
+      // judged the action itself.
+      //
+      // Only a `navigate` states a destination up front, so that is the only action whose
+      // destination policy sees in advance. A click is how most of a modern application is
+      // navigated, and a model choosing one can reach a route the deployment never listed
+      // without ever proposing an action that names it. Checking where the surface landed
+      // closes that, and it is the discovery loop that needs it: a stored step was reviewed
+      // before it was saved, while a proposed action was chosen seconds ago by a model.
+      const landed = this.policy.evaluate({ ...policyContextFor(action, step), url: after.url });
+      if (!isAllowed(landed)) {
+        await this.journal.policyEvaluated(step, action, landed);
+        return await this.denied(context, action, landed);
+      }
+
       const afterFingerprint = fingerprintObservation(after);
       // Only for an action the screen should have answered, see `shouldChangeScreen`.
       stateUnchanged = afterFingerprint === fingerprint && shouldChangeScreen(action);

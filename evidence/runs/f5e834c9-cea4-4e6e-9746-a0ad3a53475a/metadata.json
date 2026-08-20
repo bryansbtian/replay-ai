@@ -1,0 +1,44 @@
+{
+  "runId": "f5e834c9-cea4-4e6e-9746-a0ad3a53475a",
+  "kind": "replay",
+  "capabilityId": "search-restaurants-by-cuisine",
+  "capabilityVersion": 2,
+  "capabilityName": "Search Restaurants By Cuisine",
+  "inputNames": [
+    "cuisine"
+  ],
+  "policy": {
+    "allowedHosts": [
+      "localhost",
+      "127.0.0.1",
+      "seatping.biz",
+      "www.seatping.biz"
+    ],
+    "allowedSchemes": [
+      "https",
+      "http"
+    ],
+    "allowedRoutes": [],
+    "allowedActions": [
+      "navigate",
+      "click",
+      "fill",
+      "extract",
+      "wait",
+      "checkpoint"
+    ],
+    "riskPolicy": {
+      "safe": "allow",
+      "risky": "requireConfirmation",
+      "irreversible": "block"
+    }
+  },
+  "startedAt": "2026-08-20T02:24:43.662Z",
+  "completedAt": "2026-08-20T02:24:59.629Z",
+  "status": "businessOutcome",
+  "code": "NO_RESTAURANTS_FOUND",
+  "durationMs": 15773,
+  "completedSteps": 3,
+  "recoveries": 0,
+  "warnings": []
+}

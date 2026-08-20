@@ -62,7 +62,7 @@ describe('createLogger', () => {
     const { log, sink } = loggerWith('info');
 
     const fields: LogFields = {
-      anthropicApiKey: 'sk-live-value',
+      apiKey: 'sk-live-value',
       request: { headers: { authorization: 'Bearer abc' }, url: 'https://example.test' },
       tokens: ['a', 'b'],
       safe: 'kept',
@@ -74,7 +74,7 @@ describe('createLogger', () => {
     expect(line).not.toContain('Bearer abc');
 
     const record = sink.records()[0] ?? {};
-    expect(record['anthropicApiKey']).toBe(REDACTED);
+    expect(record['apiKey']).toBe(REDACTED);
     expect(record['tokens']).toBe(REDACTED);
     expect(record['safe']).toBe('kept');
     expect(record['request']).toEqual({
@@ -86,11 +86,11 @@ describe('createLogger', () => {
   it('keeps boolean presence flags readable while redacting their string form', () => {
     const { log, sink } = loggerWith('info');
 
-    log.info('config', { anthropicApiKeyPresent: true, anthropicApiKey: 'sk-live-value' });
+    log.info('config', { apiKeyPresent: true, apiKey: 'sk-live-value' });
 
     const record = sink.records()[0] ?? {};
-    expect(record['anthropicApiKeyPresent']).toBe(true);
-    expect(record['anthropicApiKey']).toBe(REDACTED);
+    expect(record['apiKeyPresent']).toBe(true);
+    expect(record['apiKey']).toBe(REDACTED);
   });
 
   it('serializes errors without dragging in a stack trace', () => {

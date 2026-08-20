@@ -2,7 +2,7 @@ import { resolve } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
-import { loadConfig, requireAnthropicApiKey, toSafeConfig } from '../src/config/index.js';
+import { loadConfig, toSafeConfig } from '../src/config/index.js';
 import { ConfigurationError } from '../src/errors.js';
 import { DEFAULT_SURFACE_TIMEOUTS } from '../src/surfaces/index.js';
 
@@ -37,13 +37,16 @@ describe('loadConfig', () => {
     expect(config.logLevel).toBe('info');
     expect(config.evidenceDir).toBe(underCwd('evidence'));
     expect(config.capabilitiesDir).toBe(underCwd('capabilities'));
-    expect(config.anthropicApiKey).toBeUndefined();
+    expect(config.llm).toEqual({
+      provider: 'ollama',
+      model: 'gemma3:27b',
+      baseUrl: 'http://127.0.0.1:11434',
+    });
   });
 
   it('reads supplied values and keeps absolute paths as given', () => {
     const config = loadConfig(
       {
-        ANTHROPIC_API_KEY: 'test-key',
         LOG_LEVEL: 'debug',
         EVIDENCE_DIR: '/var/run/evidence',
         CAPABILITIES_DIR: 'artifacts/caps',
@@ -56,7 +59,6 @@ describe('loadConfig', () => {
     // resolved against the working directory.
     expect(config.evidenceDir).toBe('/var/run/evidence');
     expect(config.capabilitiesDir).toBe(underCwd('artifacts', 'caps'));
-    expect(config.anthropicApiKey).toBe('test-key');
   });
 
   it('rejects an unknown log level and names the offending variable', () => {
@@ -100,8 +102,27 @@ describe('loadConfig', () => {
     );
   });
 
-  it('rejects an empty API key rather than treating it as absent', () => {
-    expect(() => loadConfig({ ANTHROPIC_API_KEY: '' }, { cwd: CWD })).toThrow(ConfigurationError);
+  it('rejects an unknown model provider rather than calling one that is not shipped', () => {
+    expect(() => loadConfig({ LLM_PROVIDER: 'anthropic' }, { cwd: CWD })).toThrow(
+      ConfigurationError,
+    );
+    expect(() => loadConfig({ LLM_PROVIDER: 'anthropic' }, { cwd: CWD })).toThrow(/LLM_PROVIDER/);
+  });
+
+  it('reads a local model override from the environment', () => {
+    const config = loadConfig(
+      {
+        OLLAMA_MODEL: 'gemma3:27b',
+        OLLAMA_BASE_URL: 'http://127.0.0.1:11434',
+      },
+      { cwd: CWD },
+    );
+
+    expect(config.llm).toEqual({
+      provider: 'ollama',
+      model: 'gemma3:27b',
+      baseUrl: 'http://127.0.0.1:11434',
+    });
   });
 
   it('does not echo invalid values in the error message', () => {
@@ -125,34 +146,16 @@ describe('loadConfig', () => {
   });
 });
 
-describe('requireAnthropicApiKey', () => {
-  it('returns the key when configured', () => {
-    const config = loadConfig({ ANTHROPIC_API_KEY: 'test-key' }, { cwd: CWD });
-
-    expect(requireAnthropicApiKey(config)).toBe('test-key');
-  });
-
-  it('fails fast with an actionable message when the key is missing', () => {
-    const config = loadConfig({}, { cwd: CWD });
-
-    expect(() => requireAnthropicApiKey(config)).toThrow(ConfigurationError);
-    expect(() => requireAnthropicApiKey(config)).toThrow(/ANTHROPIC_API_KEY is required/);
-  });
-});
-
 describe('toSafeConfig', () => {
-  it('reports key presence without exposing the key', () => {
-    const config = loadConfig({ ANTHROPIC_API_KEY: 'sk-secret-value' }, { cwd: CWD });
+  it('reports the local runtime without inventing a credential field', () => {
+    const config = loadConfig({ OLLAMA_MODEL: 'gemma3:27b' }, { cwd: CWD });
     const safe = toSafeConfig(config);
 
-    expect(safe.anthropicApiKeyPresent).toBe(true);
-    expect(JSON.stringify(safe)).not.toContain('sk-secret-value');
-    expect(Object.keys(safe)).not.toContain('anthropicApiKey');
-  });
-
-  it('reports absence when no key is configured', () => {
-    const safe = toSafeConfig(loadConfig({}, { cwd: CWD }));
-
-    expect(safe.anthropicApiKeyPresent).toBe(false);
+    expect(safe.llm).toEqual({
+      provider: 'ollama',
+      model: 'gemma3:27b',
+      baseUrl: 'http://127.0.0.1:11434',
+    });
+    expect(Object.keys(safe).join(',')).not.toMatch(/key|secret|token/i);
   });
 });

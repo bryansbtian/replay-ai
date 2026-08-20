@@ -165,7 +165,7 @@ export class FileEvidenceRecorder implements EvidenceRecorder {
       fields: {
         status: outcome.status,
         code: outcome.code,
-        kind: outcome.kind,
+        failureKind: outcome.failureKind,
         durationMs: outcome.durationMs,
       },
     });

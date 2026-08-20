@@ -122,7 +122,14 @@ export interface RunOutcomeRecord {
   /** `escalation` belongs to discovery: a run that needs a person has not failed. */
   readonly status: 'success' | 'businessOutcome' | 'failure' | 'escalation';
   readonly code?: string;
-  readonly kind?: string;
+  /**
+   * Which class of failure ended the run, such as `terminal` or `policy`.
+   *
+   * Named apart from the manifest's own `kind`, which says whether this was a replay or a
+   * discovery run. One field for both would mean a failed replay's record no longer says
+   * it was a replay, and a failed run is the one a reader most needs to find.
+   */
+  readonly failureKind?: string;
   readonly stepId?: string;
   readonly durationMs: number;
   readonly completedSteps: number;

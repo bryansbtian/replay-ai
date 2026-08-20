@@ -349,6 +349,39 @@ describe('the success condition', () => {
       /no observed state/,
     );
   });
+
+  it('uses the last observed screen rather than a loading heading after a click', () => {
+    const searching = [
+      { role: 'heading', name: 'Searching restaurants…', enabled: true },
+      { role: 'textbox', name: 'Member ID', enabled: true },
+      { role: 'button', name: 'Search', enabled: true },
+    ];
+    const results = [
+      { role: 'heading', name: '1 result for Japanese', enabled: true },
+      { role: 'textbox', name: 'Member ID', enabled: true },
+      { role: 'button', name: 'Search', enabled: true },
+    ];
+    const trace = memberLookupTrace({
+      inputs: [{ name: 'cuisine', value: 'Japanese' }],
+      entries: [
+        entry(1, { type: 'fill', target: MEMBER_ID_FIELD, value: 'Japanese' }),
+        entry(2, { type: 'click', target: SEARCH_BUTTON }, { after: searching }),
+        entry(
+          3,
+          { type: 'wait', condition: { type: 'textVisible', text: 'Search Results' } },
+          { ok: false, before: searching, after: results },
+        ),
+      ],
+      discovered: [],
+      outputs: {},
+    });
+
+    const artifact = compile(trace);
+
+    // The failed wait still saw the listing. The click only saw the spinner, and the
+    // heading names the cuisine, so the condition has to stay reusable across inputs.
+    expect(artifact.successCondition).toEqual({ type: 'textVisible', text: 'result' });
+  });
 });
 
 describe('declared application states', () => {

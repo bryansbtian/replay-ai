@@ -1,0 +1,20 @@
+{"timestamp":"2026-08-20T02:24:39.859Z","runId":"9d5c671d-b03f-4bae-adb0-8f7458f6fac9","event":"run_started","capabilityId":"search-restaurants-by-cuisine","capabilityVersion":2,"capabilityName":"Search Restaurants By Cuisine","inputNames":["cuisine"],"policy":{"allowedHosts":["localhost","127.0.0.1","seatping.biz","www.seatping.biz"],"allowedSchemes":["https","http"],"allowedRoutes":[],"allowedActions":["navigate","click","fill","extract","wait","checkpoint"],"riskPolicy":{"safe":"allow","risky":"requireConfirmation","irreversible":"block"}}}
+{"timestamp":"2026-08-20T02:24:39.974Z","runId":"9d5c671d-b03f-4bae-adb0-8f7458f6fac9","event":"step_started","stepId":"open-seatping","stepType":"navigate","budgetMs":15000}
+{"timestamp":"2026-08-20T02:24:40.870Z","runId":"9d5c671d-b03f-4bae-adb0-8f7458f6fac9","event":"policy_evaluated","stepId":"open-seatping","actionType":"navigate","outcome":"allow"}
+{"timestamp":"2026-08-20T02:24:40.871Z","runId":"9d5c671d-b03f-4bae-adb0-8f7458f6fac9","event":"policy_evaluated","stepId":"open-seatping","actionType":"navigate","outcome":"allow"}
+{"timestamp":"2026-08-20T02:24:40.871Z","runId":"9d5c671d-b03f-4bae-adb0-8f7458f6fac9","event":"step_completed","stepId":"open-seatping","stepType":"navigate","attempts":1,"durationMs":894}
+{"timestamp":"2026-08-20T02:24:40.872Z","runId":"9d5c671d-b03f-4bae-adb0-8f7458f6fac9","event":"step_started","stepId":"enter-search","stepType":"fill","budgetMs":15000}
+{"timestamp":"2026-08-20T02:24:40.989Z","runId":"9d5c671d-b03f-4bae-adb0-8f7458f6fac9","event":"policy_evaluated","stepId":"enter-search","actionType":"fill","outcome":"allow"}
+{"timestamp":"2026-08-20T02:24:40.990Z","runId":"9d5c671d-b03f-4bae-adb0-8f7458f6fac9","event":"step_completed","stepId":"enter-search","stepType":"fill","attempts":1,"durationMs":117}
+{"timestamp":"2026-08-20T02:24:40.990Z","runId":"9d5c671d-b03f-4bae-adb0-8f7458f6fac9","event":"step_started","stepId":"click-search","stepType":"click","budgetMs":15000}
+{"timestamp":"2026-08-20T02:24:41.040Z","runId":"9d5c671d-b03f-4bae-adb0-8f7458f6fac9","event":"policy_evaluated","stepId":"click-search","actionType":"click","outcome":"allow"}
+{"timestamp":"2026-08-20T02:24:41.041Z","runId":"9d5c671d-b03f-4bae-adb0-8f7458f6fac9","event":"step_completed","stepId":"click-search","stepType":"click","attempts":1,"durationMs":49}
+{"timestamp":"2026-08-20T02:24:41.041Z","runId":"9d5c671d-b03f-4bae-adb0-8f7458f6fac9","event":"step_started","stepId":"await-restaurant-results","stepType":"wait","budgetMs":15000}
+{"timestamp":"2026-08-20T02:24:41.865Z","runId":"9d5c671d-b03f-4bae-adb0-8f7458f6fac9","event":"checkpoint_passed","stepId":"await-restaurant-results","checkpointType":"targetVisible","expected":"Target \"Restaurant Result Card\" Is Visible","durationMs":823}
+{"timestamp":"2026-08-20T02:24:41.866Z","runId":"9d5c671d-b03f-4bae-adb0-8f7458f6fac9","event":"policy_evaluated","stepId":"await-restaurant-results","actionType":"wait","outcome":"allow"}
+{"timestamp":"2026-08-20T02:24:41.866Z","runId":"9d5c671d-b03f-4bae-adb0-8f7458f6fac9","event":"step_completed","stepId":"await-restaurant-results","stepType":"wait","attempts":1,"durationMs":824}
+{"timestamp":"2026-08-20T02:24:41.866Z","runId":"9d5c671d-b03f-4bae-adb0-8f7458f6fac9","event":"step_started","stepId":"read-result-count","stepType":"extract","budgetMs":15000}
+{"timestamp":"2026-08-20T02:24:41.872Z","runId":"9d5c671d-b03f-4bae-adb0-8f7458f6fac9","event":"policy_evaluated","stepId":"read-result-count","actionType":"extract","outcome":"allow"}
+{"timestamp":"2026-08-20T02:24:41.872Z","runId":"9d5c671d-b03f-4bae-adb0-8f7458f6fac9","event":"step_completed","stepId":"read-result-count","stepType":"extract","attempts":1,"durationMs":5}
+{"timestamp":"2026-08-20T02:24:41.874Z","runId":"9d5c671d-b03f-4bae-adb0-8f7458f6fac9","event":"checkpoint_passed","stepId":"successCondition","checkpointType":"targetVisible","expected":"Target \"Result Count Heading\" Is Visible","durationMs":2}
+{"timestamp":"2026-08-20T02:24:41.910Z","runId":"9d5c671d-b03f-4bae-adb0-8f7458f6fac9","event":"run_completed","status":"success","durationMs":1901}

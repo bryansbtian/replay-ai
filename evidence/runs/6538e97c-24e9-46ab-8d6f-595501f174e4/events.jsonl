@@ -1,0 +1,16 @@
+{"timestamp":"2026-08-20T02:23:59.146Z","runId":"6538e97c-24e9-46ab-8d6f-595501f174e4","event":"run_started","capabilityId":"search-restaurants-by-cuisine","capabilityVersion":1,"capabilityName":"Search Restaurants By Cuisine","inputNames":["cuisine"],"policy":{"allowedHosts":["localhost","127.0.0.1","seatping.biz","www.seatping.biz"],"allowedSchemes":["https","http"],"allowedRoutes":[],"allowedActions":["navigate","click","fill","extract","wait","checkpoint"],"riskPolicy":{"safe":"allow","risky":"requireConfirmation","irreversible":"block"}}}
+{"timestamp":"2026-08-20T02:23:59.147Z","runId":"6538e97c-24e9-46ab-8d6f-595501f174e4","event":"step_started","stepId":"open-seatping","stepType":"navigate","budgetMs":15000}
+{"timestamp":"2026-08-20T02:23:59.385Z","runId":"6538e97c-24e9-46ab-8d6f-595501f174e4","event":"policy_evaluated","stepId":"open-seatping","actionType":"navigate","outcome":"allow"}
+{"timestamp":"2026-08-20T02:23:59.387Z","runId":"6538e97c-24e9-46ab-8d6f-595501f174e4","event":"policy_evaluated","stepId":"open-seatping","actionType":"navigate","outcome":"allow"}
+{"timestamp":"2026-08-20T02:23:59.388Z","runId":"6538e97c-24e9-46ab-8d6f-595501f174e4","event":"step_completed","stepId":"open-seatping","stepType":"navigate","attempts":1,"durationMs":236}
+{"timestamp":"2026-08-20T02:23:59.390Z","runId":"6538e97c-24e9-46ab-8d6f-595501f174e4","event":"step_started","stepId":"enter-search","stepType":"fill","budgetMs":15000}
+{"timestamp":"2026-08-20T02:23:59.572Z","runId":"6538e97c-24e9-46ab-8d6f-595501f174e4","event":"policy_evaluated","stepId":"enter-search","actionType":"fill","outcome":"allow"}
+{"timestamp":"2026-08-20T02:23:59.573Z","runId":"6538e97c-24e9-46ab-8d6f-595501f174e4","event":"step_completed","stepId":"enter-search","stepType":"fill","attempts":1,"durationMs":181}
+{"timestamp":"2026-08-20T02:23:59.573Z","runId":"6538e97c-24e9-46ab-8d6f-595501f174e4","event":"step_started","stepId":"click-search","stepType":"click","budgetMs":15000}
+{"timestamp":"2026-08-20T02:23:59.640Z","runId":"6538e97c-24e9-46ab-8d6f-595501f174e4","event":"policy_evaluated","stepId":"click-search","actionType":"click","outcome":"allow"}
+{"timestamp":"2026-08-20T02:23:59.641Z","runId":"6538e97c-24e9-46ab-8d6f-595501f174e4","event":"step_completed","stepId":"click-search","stepType":"click","attempts":1,"durationMs":67}
+{"timestamp":"2026-08-20T02:23:59.641Z","runId":"6538e97c-24e9-46ab-8d6f-595501f174e4","event":"step_started","stepId":"read-result-count","stepType":"extract","budgetMs":15000}
+{"timestamp":"2026-08-20T02:23:59.954Z","runId":"6538e97c-24e9-46ab-8d6f-595501f174e4","event":"policy_evaluated","stepId":"read-result-count","actionType":"extract","outcome":"allow"}
+{"timestamp":"2026-08-20T02:23:59.955Z","runId":"6538e97c-24e9-46ab-8d6f-595501f174e4","event":"step_completed","stepId":"read-result-count","stepType":"extract","attempts":1,"durationMs":312}
+{"timestamp":"2026-08-20T02:23:59.960Z","runId":"6538e97c-24e9-46ab-8d6f-595501f174e4","event":"checkpoint_passed","stepId":"successCondition","checkpointType":"textVisible","expected":"Text \"result\" Is Visible","durationMs":5}
+{"timestamp":"2026-08-20T02:23:59.961Z","runId":"6538e97c-24e9-46ab-8d6f-595501f174e4","event":"run_completed","status":"success","durationMs":814}

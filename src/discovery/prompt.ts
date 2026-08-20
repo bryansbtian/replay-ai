@@ -53,6 +53,9 @@ Go to a page:
 Report that the goal is met:
 {"type":"complete","summary":"The member summary is visible and shows the savings balance","outputs":{"savingsBalance":"5234.17"}}
 
+Report that a search listing is on screen:
+{"type":"complete","summary":"The restaurant search results for the requested cuisine are visible","outputs":{}}
+
 Ask for a person:
 {"type":"escalate","reason":"The application is asking to approve a payment, which I should not decide"}
 
@@ -65,18 +68,20 @@ The only wait conditions are: {"type":"targetVisible","target":{"description":".
 Rules:
 - Choose exactly one action per turn. React to what the observation actually shows.
 - Only target controls and text that appear in the observation. Do not guess at a control you have not seen.
-- After you submit a form or click something that loads a result, your next decision must be a wait for the state you expect. Results do not appear instantly, and the observation you are shown was taken the moment the action finished.
-- Never repeat an action you have already carried out. If the screen has not changed yet, wait for what you expect rather than doing it again. Repeating an action ends the run.
-- A wait must name the new thing you expect to appear, such as the heading of the result you asked for. Waiting for something already listed in the observation succeeds instantly and wastes the turn.
+- After you submit a form or click something that loads a result, look at the new observation before waiting. Wait only when the outcome the goal asked for is not in the observation yet.
+- Never repeat an action you have already carried out. If the screen has not changed yet and the goal is still not visible, wait for a phrase that will appear, taken from the goal, rather than doing the same click or fill again. Repeating an action ends the run.
+- A wait must name a short phrase you expect to appear, copied from the kind of result the goal asked for, such as a result count. Do not invent a heading like "Search Results" that the page never shows. Waiting for something already listed in the observation succeeds instantly and wastes the turn.
 - Work through the whole goal. Filling a field is not submitting it, and submitting is not reading the answer.
 - Use extract to read a value the goal asks for. Report the value you extracted, never a value you assumed.
-- If the value the goal asks for is already visible in the observation text, you may report it directly in a complete decision. Extracting it again is not required.
+- Every value name, in an extract action and in the outputs of a complete decision, is camelCase: memberName, savingsBalance, accountNumber. Not member_name, not MemberName, not "Member Name". A name in any other shape is rejected and the turn is wasted.
+- Read a value the goal asks for with an extract action even when the observation text already shows it. This run is being recorded as a workflow that will be replayed for a different member, and only an extract action teaches it where to read that value again. A value reported in a complete decision and never extracted is thrown away.
 - If an action fails, do not repeat it unchanged. Target the control a different way, or take a different route to the goal. The same action failing three times ends the run.
 - Give a target more than one strategy when the observation supports it, so a control that one strategy misses is still found.
-- To extract a printed value such as a balance, target it with the attribute strategy listed under Readable Values. A heading near the value is not the value, and text strategies match the label rather than what it labels.
+- To extract a printed value such as a balance, target it with the attribute strategy listed under Readable Values. A heading near the value is not the value, and text strategies match the label rather than what it labels. When no readable value is listed, target the element that states the value itself, such as the heading that reports a result count.
 - Stay inside the application you were given. Do not navigate to an unrelated site.
 - Do not claim the goal is complete unless the current observation shows it. If you cannot see the result, keep working or escalate.
-- As soon as you have everything the goal asked for, answer with complete. Anything listed under Values Read So Far you already have; do not read it again.
+- Once Visible Text shows the listing, result count, or page the goal asked to reach, extract every value the goal asked you to read, and then answer with complete. A goal that says read, report, or how many is not met by arriving at the screen that shows it. Do not open a result, book, join a queue, log in, or sign up unless the goal asked for that.
+- Anything listed under Values Read So Far you already have; do not read it again.
 - Escalate when the application asks for something you should not decide: a permission, a payment, a confirmation of something irreversible, or a credential you were not given.
 - Never output executable code, a script, or a selector to be evaluated.
 - Never enter a password, token, or any secret. If the workflow needs one, escalate instead.`;
@@ -248,7 +253,7 @@ export function buildInstruction(input: InstructionInput): string {
   if (input.stateUnchanged === true) {
     lines.push(
       '',
-      'This screen is identical to the one before your last action. The application has not responded yet, or your last action did nothing. Do not repeat that action. Wait for the state you are expecting, or choose a different approach.',
+      'This screen is identical to the one before your last action. Do not repeat that action. If Visible Text or the URL already shows the goal is met, answer with complete now. Otherwise choose a different approach. Do not wait for the same text again.',
     );
   }
 

@@ -17,7 +17,7 @@ export const REDACTED = '[redacted]';
 /**
  * Field names whose values are never persisted or printed.
  *
- * Matched as a substring, case-insensitively, so `apiKey`, `ANTHROPIC_API_KEY`,
+ * Matched as a substring, case-insensitively, so `apiKey`, `OLLAMA_API_KEY`,
  * `set-cookie`, and `authorizationHeader` are all covered by one rule. A denylist of
  * names is weaker than an allowlist of safe fields, and it is what a general-purpose
  * logger can enforce; the layers that know their own data (evidence, policy contexts)
@@ -28,7 +28,7 @@ const SENSITIVE_KEY_PATTERN =
 
 /**
  * A field is redacted when its name looks secret-bearing and its value could carry
- * content. Booleans are exempt: a presence flag such as `anthropicApiKeyPresent` is
+ * content. Booleans are exempt: a presence flag such as `apiKeyPresent` is
  * exactly the kind of field this exists to make loggable.
  */
 export function isSensitiveField(key: string, value: unknown): boolean {

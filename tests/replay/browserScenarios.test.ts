@@ -35,7 +35,7 @@ import { permissivePolicy } from './support/policy.js';
  * ```
  */
 
-const ARTIFACT_PATH = 'capabilities/examples/lookup-demo-member.json';
+const ARTIFACT_PATH = 'tests/fixtures/capabilities/lookup-demo-member.json';
 
 const FIXTURE_URL = pathToFileURL(resolve('tests/fixtures/member-lookup.html')).href;
 

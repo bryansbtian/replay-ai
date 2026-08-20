@@ -10,9 +10,15 @@ import {
   type ComputerSurface,
   type Target,
 } from '../../src/surfaces/index.js';
-import type { PlaywrightSession } from '../../src/surfaces/playwright/index.js';
+import { PlaywrightSurface, type PlaywrightSession } from '../../src/surfaces/playwright/index.js';
 
-import { FIXTURE_URL, openSurface, recordingLogger } from './support/fixture.js';
+import {
+  FIXTURE_URL,
+  openSurface,
+  recordingLogger,
+  silentLogger,
+  TEST_TIMEOUTS,
+} from './support/fixture.js';
 
 const SEARCH_FIELD: Target = createTarget('Search Field', [
   { kind: 'role', role: 'textbox', name: 'Search Term' },
@@ -80,7 +86,9 @@ describe('a navigation that cannot complete', () => {
       // The multi-line Playwright call log stays on the cause, not in the message.
       expect(failure.message.split('\n')).toHaveLength(1);
     }
-  });
+    // Launching a browser inside the test body rather than in a shared hook puts a cold
+    // Chromium start inside the budget, which the default per-test timeout does not cover.
+  }, 30_000);
 });
 
 describe('observe', () => {
@@ -122,6 +130,27 @@ describe('fill', () => {
     await surface.fill(SEARCH_FIELD, 'Second');
 
     expect((await surface.extract(SEARCH_FIELD, { kind: 'value' })).value).toBe('Second');
+  });
+
+  it('types a value key by key when a type delay is configured', async () => {
+    const fixture = await openSurface();
+    const typed = new PlaywrightSurface({
+      page: fixture.session.page,
+      logger: silentLogger(),
+      timeouts: TEST_TIMEOUTS,
+      typeDelayMs: 25,
+    });
+    try {
+      await typed.navigate(FIXTURE_URL);
+      const started = performance.now();
+      await typed.fill(SEARCH_FIELD, 'ABCD');
+      const elapsed = performance.now() - started;
+
+      expect((await typed.extract(SEARCH_FIELD, { kind: 'value' })).value).toBe('ABCD');
+      expect(elapsed).toBeGreaterThanOrEqual(75);
+    } finally {
+      await fixture.session.close();
+    }
   });
 
   it('fails clearly when the control cannot accept input', async () => {

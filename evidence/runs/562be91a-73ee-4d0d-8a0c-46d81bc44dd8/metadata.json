@@ -1,0 +1,42 @@
+{
+  "runId": "562be91a-73ee-4d0d-8a0c-46d81bc44dd8",
+  "kind": "discovery",
+  "goal": "Search SeatPing for Japanese restaurants, reach the search results, and read the heading that reports how many results were found.",
+  "target": "https://seatping.biz",
+  "policy": {
+    "allowedHosts": [
+      "localhost",
+      "127.0.0.1",
+      "seatping.biz",
+      "www.seatping.biz"
+    ],
+    "allowedSchemes": [
+      "https",
+      "http"
+    ],
+    "allowedRoutes": [],
+    "allowedActions": [
+      "navigate",
+      "click",
+      "fill",
+      "extract",
+      "wait",
+      "checkpoint"
+    ],
+    "riskPolicy": {
+      "safe": "allow",
+      "risky": "requireConfirmation",
+      "irreversible": "block"
+    }
+  },
+  "startedAt": "2026-08-20T02:21:58.399Z",
+  "completedAt": "2026-08-20T02:24:00.041Z",
+  "status": "success",
+  "outputNames": [
+    "resultCount"
+  ],
+  "durationMs": 120613,
+  "completedSteps": 4,
+  "recoveries": 0,
+  "warnings": []
+}

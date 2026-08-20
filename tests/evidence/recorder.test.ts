@@ -241,7 +241,7 @@ describe('completing a run', () => {
     await subject.complete({
       status: 'failure',
       code: 'POLICY_DOMAIN_NOT_ALLOWED',
-      kind: 'policy',
+      failureKind: 'policy',
       stepId: 'open-lookup',
       durationMs: 20,
       completedSteps: 0,
@@ -251,8 +251,26 @@ describe('completing a run', () => {
     expect(await metadataOf(subject)).toMatchObject({
       status: 'failure',
       code: 'POLICY_DOMAIN_NOT_ALLOWED',
-      kind: 'policy',
+      failureKind: 'policy',
     });
+  });
+
+  it('still says a failed run was a replay, rather than naming the failure class', async () => {
+    const subject = recorder();
+    await subject.start(START);
+
+    await subject.complete({
+      status: 'failure',
+      code: 'REPLAY_WAIT_TIMEOUT',
+      failureKind: 'terminal',
+      durationMs: 20,
+      completedSteps: 3,
+      recoveries: 0,
+    });
+
+    // A manifest whose kind read "terminal" would leave the failed runs, which are the
+    // ones somebody goes looking for, indistinguishable from a discovery run.
+    expect(await metadataOf(subject)).toMatchObject({ kind: 'replay', failureKind: 'terminal' });
   });
 
   it('carries any warnings it collected into the manifest', async () => {

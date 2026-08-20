@@ -350,6 +350,18 @@ function describePath(path: string): string {
   return local;
 }
 
+function announceStart(args: DiscoverArguments, model: string): string {
+  return [
+    '',
+    'Discovery Started',
+    '',
+    `  Goal:   ${args.goal}`,
+    `  Target: ${args.target}`,
+    `  Model:  ${model}`,
+    '',
+  ].join('\n');
+}
+
 function summarize(result: DiscoveryResult, evidencePath: string, model: string): string {
   const lines = [
     '',
@@ -396,6 +408,7 @@ export async function runDiscoverCommand(
   });
 
   const llm = createLlmClient(config);
+  deps.stderr(announceStart(args, config.llm.model));
   const session = await launchPlaywrightSession({ headless: args.headless });
 
   let result: DiscoveryResult;
@@ -572,7 +585,7 @@ function outcomeDetail(result: DiscoveryResult): Record<string, string | string[
     return { outputNames: Object.keys(result.outputs) };
   }
   if (result.status === 'escalation') {
-    return { kind: result.source };
+    return { failureKind: result.source };
   }
-  return { code: result.code, kind: result.kind };
+  return { code: result.code, failureKind: result.kind };
 }

@@ -82,8 +82,8 @@ export class FileArtifactStore {
   /**
    * Summarizes every artifact in the directory, ordered by id so that output is stable.
    *
-   * Subdirectories are ignored, which is what keeps the committed examples out of a
-   * working store. A missing directory lists as empty; an unreadable file is an error,
+   * Subdirectories are ignored, so a store directory can hold supporting files without
+   * them reading as capabilities. A missing directory lists as empty; an unreadable file is an error,
    * because quietly skipping one would hide the capability rather than the problem.
    */
   async list(): Promise<CapabilitySummary[]> {

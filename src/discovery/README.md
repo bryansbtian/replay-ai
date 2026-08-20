@@ -17,9 +17,9 @@ prompt            everything the model is told, in one reviewable place
 Depends on: `llm` (the generic client only), `surfaces` (the contract only), `execution`,
 `artifacts` (for the target and checkpoint schemas), `policy`, `evidence`.
 
-Must not import a provider implementation (`llm/anthropic`, `llm/ollama`), a model SDK,
-Playwright, or `replay`. A composition root under `cli/` chooses the provider and the
-surface. Enforced by a scoped ESLint rule and by `tests/architecture.test.ts`.
+Must not import a provider implementation (`llm/ollama`), Playwright, or `replay`. A
+composition root under `cli/` chooses the provider and the surface. Enforced by a scoped
+ESLint rule and by `tests/architecture.test.ts`.
 
 A successful run produces a `DiscoveryTrace`, not a capability artifact. Compiling one into
 the other belongs to `compilation/`, which depends on this directory and is not depended on

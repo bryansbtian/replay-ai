@@ -88,6 +88,13 @@ export interface ReplayEngineOptions {
   /** Injected in tests so a result is comparable; a run generates one otherwise. */
   readonly replayId?: string;
   /**
+   * Pause after each completed step, and once more after success.
+   *
+   * Headed CLI replay uses a few seconds so a person can follow the workflow. Tests and
+   * headless runs leave this unset, which is instant.
+   */
+  readonly stepPauseMs?: number;
+  /**
    * Where the run asks for a person when it cannot safely continue.
    *
    * Optional, and absent by default. Without one, a run that meets a state it cannot clear
@@ -202,6 +209,7 @@ export class ReplayEngine {
   private readonly timeouts: SurfaceTimeouts;
   private readonly stepTimeoutMs: number | undefined;
   private readonly replayId: string | undefined;
+  private readonly stepPauseMs: number;
   private readonly intervention: InterventionHandler | undefined;
   /** Policy answers awaiting a journal write, see `onPolicyDecision`. */
   private readonly decisions: { step: CapabilityStep; decision: PolicyDecision }[] = [];
@@ -214,7 +222,23 @@ export class ReplayEngine {
     this.timeouts = options.timeouts ?? DEFAULT_SURFACE_TIMEOUTS;
     this.stepTimeoutMs = options.stepTimeoutMs;
     this.replayId = options.replayId;
+    this.stepPauseMs = options.stepPauseMs ?? 0;
     this.intervention = options.intervention;
+  }
+
+  /**
+   * Holds the page between actions when a headed run is being watched.
+   *
+   * A fixed delay belongs here rather than in the surface: the surface waits on state,
+   * and this pause is only for a person looking at the window.
+   */
+  private async pauseBetweenSteps(): Promise<void> {
+    if (this.stepPauseMs <= 0) {
+      return;
+    }
+    await new Promise<void>((resolve) => {
+      setTimeout(resolve, this.stepPauseMs);
+    });
   }
 
   /**
@@ -345,6 +369,7 @@ export class ReplayEngine {
           durationMs: outcome.durationMs,
         });
         await context.journal.stepCompleted(step, attempts, outcome.durationMs);
+        await this.pauseBetweenSteps();
         return undefined;
       }
 
@@ -353,6 +378,7 @@ export class ReplayEngine {
         continue;
       }
       if (resolved.kind === 'skip') {
+        await this.pauseBetweenSteps();
         return undefined;
       }
       if (resolved.kind === 'result') {
@@ -394,6 +420,7 @@ export class ReplayEngine {
       });
     }
     await context.journal.checkpoint('successCondition', outcome);
+    await this.pauseBetweenSteps();
 
     const collected = outputs.collect();
     if (!collected.ok) {

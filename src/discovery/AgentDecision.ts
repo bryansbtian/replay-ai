@@ -197,13 +197,31 @@ function extractJsonObject(text: string): string | undefined {
   return undefined;
 }
 
+/**
+ * The message that says what is actually wrong with one issue.
+ *
+ * A rejected object key reports "Invalid key in record" at the top level and carries the
+ * rule it broke in a nested issue. The nested message is the useful one: this text is fed
+ * back to the model on a re-ask, and "invalid key" tells it nothing it can act on, while
+ * "must be a camelCase name" tells it exactly what to change.
+ */
+function messageOf(issue: z.core.$ZodIssue): string {
+  if (issue.code === 'invalid_key') {
+    const inner = issue.issues[0];
+    if (inner !== undefined) {
+      return inner.message;
+    }
+  }
+  return issue.message;
+}
+
 function describeIssues(error: z.ZodError): string {
   const lines = error.issues.slice(0, 5).map((issue) => {
     const path = issue.path.join('.');
     if (path === '') {
-      return issue.message;
+      return messageOf(issue);
     }
-    return `${path}: ${issue.message}`;
+    return `${path}: ${messageOf(issue)}`;
   });
   return lines.join('; ');
 }
