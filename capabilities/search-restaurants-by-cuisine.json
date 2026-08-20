@@ -1,0 +1,147 @@
+{
+  "schemaVersion": "1",
+  "id": "search-restaurants-by-cuisine",
+  "name": "Search Restaurants By Cuisine",
+  "description": "Searches SeatPing for restaurants matching a cuisine, reaches the search results, and reads the result count the page reports.",
+  "version": 2,
+  "application": {
+    "name": "SeatPing",
+    "entryPoint": "https://seatping.biz"
+  },
+  "inputs": [
+    {
+      "name": "cuisine",
+      "type": "string",
+      "required": true,
+      "description": "Cuisine, area, or restaurant name to search for, for example \"Japanese\".",
+      "sensitive": false
+    }
+  ],
+  "outputs": [
+    {
+      "name": "resultCount",
+      "type": "string",
+      "description": "The result count heading exactly as the page prints it, for example: 1 result for \"Japanese\"."
+    }
+  ],
+  "steps": [
+    {
+      "id": "open-seatping",
+      "type": "navigate",
+      "url": "https://seatping.biz",
+      "risk": "safe"
+    },
+    {
+      "id": "enter-search",
+      "type": "fill",
+      "target": {
+        "description": "Search Field",
+        "strategies": [
+          {
+            "kind": "role",
+            "role": "combobox",
+            "name": "Search restaurants, cuisines, or areas"
+          },
+          {
+            "kind": "label",
+            "text": "Search restaurants, cuisines, or areas"
+          }
+        ]
+      },
+      "value": {
+        "source": "input",
+        "name": "cuisine"
+      },
+      "risk": "safe"
+    },
+    {
+      "id": "click-search",
+      "type": "click",
+      "target": {
+        "description": "Search Button",
+        "strategies": [
+          {
+            "kind": "role",
+            "role": "button",
+            "name": "Search"
+          }
+        ]
+      },
+      "risk": "safe"
+    },
+    {
+      "id": "await-restaurant-results",
+      "type": "wait",
+      "condition": {
+        "type": "targetVisible",
+        "target": {
+          "description": "Restaurant Result Card",
+          "strategies": [
+            {
+              "kind": "css",
+              "selector": "article"
+            }
+          ]
+        }
+      },
+      "execution": {
+        "timeoutMs": 15000
+      }
+    },
+    {
+      "id": "read-result-count",
+      "type": "extract",
+      "target": {
+        "description": "Result Count Heading",
+        "strategies": [
+          {
+            "kind": "role",
+            "role": "heading",
+            "name": "for \"",
+            "exact": false
+          },
+          {
+            "kind": "css",
+            "selector": "h1"
+          }
+        ]
+      },
+      "output": "resultCount"
+    }
+  ],
+  "successCondition": {
+    "type": "targetVisible",
+    "target": {
+      "description": "Result Count Heading",
+      "strategies": [
+        {
+          "kind": "role",
+          "role": "heading",
+          "name": "for \"",
+          "exact": false
+        },
+        {
+          "kind": "css",
+          "selector": "h1"
+        }
+      ]
+    }
+  },
+  "businessOutcomes": [
+    {
+      "code": "NO_RESTAURANTS_FOUND",
+      "description": "SeatPing reports that no restaurant matches the supplied search term.",
+      "condition": {
+        "type": "textVisible",
+        "text": "No Restaurants Found"
+      },
+      "disposition": "businessOutcome"
+    }
+  ],
+  "recoveries": [],
+  "metadata": {
+    "createdAt": "2026-08-20T02:23:59.139Z",
+    "updatedAt": "2026-08-20T02:30:00.000Z",
+    "tags": []
+  }
+}

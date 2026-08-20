@@ -166,6 +166,58 @@ function toStep(
 }
 
 /**
+ * A heading that names a spinner, not the screen the workflow was meant to reach.
+ *
+ * Discovery often clicks Search and immediately observes "Searching…". Compiling that as
+ * success would let replay pass before any listing appeared.
+ */
+function isTransientStatus(name: string): boolean {
+  const lowered = name.trim().toLowerCase();
+  if (lowered.startsWith('searching')) {
+    return true;
+  }
+  if (lowered.startsWith('loading')) {
+    return true;
+  }
+  if (lowered.includes('please wait')) {
+    return true;
+  }
+  return false;
+}
+
+function namesAnInputValue(name: string, inputs: readonly DiscoveryInput[]): boolean {
+  for (const input of inputs) {
+    if (input.value !== '' && name.includes(input.value)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * A success marker that still holds when the same workflow is invoked with a different
+ * input. A heading like `1 result for Japanese` would make Korean searches fail.
+ */
+function parameterizedArrival(name: string, inputs: readonly DiscoveryInput[]): Checkpoint {
+  const lowered = name.toLowerCase();
+  if (lowered.includes('result')) {
+    return { type: 'textVisible', text: 'result' };
+  }
+
+  let text = name;
+  for (const input of inputs) {
+    if (input.value !== '') {
+      text = text.replaceAll(input.value, '');
+    }
+  }
+  text = text.replace(/["'`]/g, '').replace(/\s+/g, ' ').trim();
+  if (text.length >= 4) {
+    return { type: 'textVisible', text };
+  }
+  return { type: 'textVisible', text: name };
+}
+
+/**
  * The control that appeared because the workflow ran.
  *
  * The success condition has to prove the run arrived somewhere, and the difference between
@@ -173,15 +225,20 @@ function toStep(
  * heading or a region is preferred because those are what applications use to name the
  * thing they just showed you, which makes the condition read like the goal rather than
  * like the last button that was pressed.
+ *
+ * The last screen is used even when that last action failed. A wait for the wrong phrase
+ * still observed the listing; the successful click before it often only observed a spinner.
  */
 function arrivedControl(trace: DiscoveryTrace): ObservedControl | undefined {
-  const compiled = trace.entries.filter((entry) => entry.outcome.ok);
   const first = trace.entries[0]?.observation.controls ?? [];
-  const last = compiled.at(-1)?.stateAfter.controls ?? [];
+  const last = trace.entries.at(-1)?.stateAfter.controls ?? [];
 
   const before = new Set(first.map((control) => `${control.role}:${control.name}`));
   const appeared = last.filter((control) => {
     if (control.name.trim() === '') {
+      return false;
+    }
+    if (isTransientStatus(control.name)) {
       return false;
     }
     return !before.has(`${control.role}:${control.name}`);
@@ -211,6 +268,10 @@ function successConditionFor(trace: DiscoveryTrace): Checkpoint {
       'normalization',
       'The successful run ended on the screen it started from, so there is no observed state that proves the workflow arrived anywhere. A capability without a real success condition would report success for a run that did nothing.',
     );
+  }
+
+  if (namesAnInputValue(control.name, trace.inputs)) {
+    return parameterizedArrival(control.name, trace.inputs);
   }
 
   const role = TARGET_ROLES.find((known) => known === control.role);

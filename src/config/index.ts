@@ -42,11 +42,12 @@ const commaSeparated = z.string().transform((value) => {
 /**
  * The model providers this deployment can be pointed at.
  *
- * Both implement the same one-method boundary, and discovery is handed one without being
- * told which. Naming them here rather than in discovery is what keeps the choice a
- * deployment decision instead of a code path.
+ * Discovery is handed an `LLMClient` and is never told which implementation answered.
+ * Only a local Ollama runtime is shipped. The name still lives in configuration so a
+ * second implementation can be added without teaching discovery a vendor, and so an
+ * old environment that still says otherwise fails validation instead of calling one.
  */
-export const LLM_PROVIDERS = ['ollama', 'anthropic'] as const;
+export const LLM_PROVIDERS = ['ollama'] as const;
 
 export type LlmProvider = (typeof LLM_PROVIDERS)[number];
 
@@ -54,8 +55,8 @@ export type LlmProvider = (typeof LLM_PROVIDERS)[number];
 export interface LlmConfig {
   readonly provider: LlmProvider;
   readonly model: string;
-  /** Where a locally hosted provider listens. Absent for a hosted API. */
-  readonly baseUrl?: string;
+  /** Where the local runtime listens. */
+  readonly baseUrl: string;
 }
 
 /** What bounds a discovery run. The model cannot see or raise either of them. */
@@ -72,19 +73,13 @@ export interface HandoffConfig {
 }
 
 const envSchema = z.object({
-  // Optional so that lint, tests and offline commands run without credentials.
-  // Commands that call Anthropic obtain it through `requireAnthropicApiKey`.
-  ANTHROPIC_API_KEY: z.string().min(1, 'must not be empty when set').optional(),
-  // Which implementation of the model boundary a discovery run is given. Defaulting to
-  // the local provider means the repository is runnable with no account and no key, and
-  // the hosted one is a variable away rather than a code change.
+  // Which implementation of the model boundary a discovery run is given. The only
+  // shipped value is the local runtime, which needs no account and no key.
   LLM_PROVIDER: z
     .enum(LLM_PROVIDERS, { error: `must be one of ${LLM_PROVIDERS.join(', ')}` })
     .default('ollama'),
-  // Model identifiers are configuration, never literals in application code. One per
-  // provider, because the two name their models nothing alike.
-  ANTHROPIC_MODEL: z.string().min(1, 'must not be empty').default('claude-sonnet-5'),
-  OLLAMA_MODEL: z.string().min(1, 'must not be empty').default('llama3.1:8b'),
+  // Model identifiers are configuration, never literals in application code.
+  OLLAMA_MODEL: z.string().min(1, 'must not be empty').default('gemma3:27b'),
   // The loopback address rather than "localhost", which resolves to IPv6 first on
   // Windows and reaches a daemon that is listening on IPv4 only.
   OLLAMA_BASE_URL: z.url('must be an absolute URL').default('http://127.0.0.1:11434'),
@@ -177,17 +172,9 @@ function toPolicyConfig(env: RawEnv): PolicyConfig {
   return parsed.data;
 }
 
-/**
- * Resolves the model settings for the selected provider.
- *
- * Only the chosen provider's settings appear in the result, so a run cannot be handed a
- * base URL belonging to a provider it is not using, and `SafeConfig` cannot print one.
- */
+/** Resolves the local runtime settings. The only shipped provider. */
 function toLlmConfig(env: RawEnv): LlmConfig {
-  if (env.LLM_PROVIDER === 'ollama') {
-    return { provider: 'ollama', model: env.OLLAMA_MODEL, baseUrl: env.OLLAMA_BASE_URL };
-  }
-  return { provider: 'anthropic', model: env.ANTHROPIC_MODEL };
+  return { provider: 'ollama', model: env.OLLAMA_MODEL, baseUrl: env.OLLAMA_BASE_URL };
 }
 
 export interface AppConfig {
@@ -206,8 +193,6 @@ export interface AppConfig {
   readonly discovery: DiscoveryConfig;
   /** How a paused run reaches a person. */
   readonly handoff: HandoffConfig;
-  /** Present only when supplied; never logged or serialized. */
-  readonly anthropicApiKey?: string;
 }
 
 /**
@@ -223,7 +208,6 @@ export type SafeConfig = {
   readonly llm: LlmConfig;
   readonly discovery: DiscoveryConfig;
   readonly handoff: HandoffConfig;
-  readonly anthropicApiKeyPresent: boolean;
 };
 
 export interface LoadConfigOptions {
@@ -287,25 +271,7 @@ export function loadConfig(
     },
   };
 
-  const apiKey = parsed.data.ANTHROPIC_API_KEY;
-  if (apiKey === undefined) {
-    return base;
-  }
-  return { ...base, anthropicApiKey: apiKey };
-}
-
-/**
- * Returns the Anthropic API key, failing fast with an actionable message when a
- * command that needs live model access was started without one.
- */
-export function requireAnthropicApiKey(config: AppConfig): string {
-  const apiKey = config.anthropicApiKey;
-  if (apiKey === undefined) {
-    throw new ConfigurationError(
-      'ANTHROPIC_API_KEY is required for this command. Set it in your environment or .env file (see .env.example).',
-    );
-  }
-  return apiKey;
+  return base;
 }
 
 /** Projects config down to fields that are safe to log or print. */
@@ -319,6 +285,5 @@ export function toSafeConfig(config: AppConfig): SafeConfig {
     llm: config.llm,
     discovery: config.discovery,
     handoff: config.handoff,
-    anthropicApiKeyPresent: config.anthropicApiKey !== undefined,
   };
 }

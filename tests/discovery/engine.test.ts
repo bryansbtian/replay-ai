@@ -228,6 +228,43 @@ describe('policy on a model-proposed action', () => {
     expect(surface.methods()).not.toContain('fill');
   });
 
+  it('stops when a click lands on a route the deployment never allowed', async () => {
+    // Only a navigate states a destination up front, so a click is how a model can reach
+    // a route nobody listed without ever proposing an action that names one. A modern
+    // application navigates almost entirely by clicking, so this is the ordinary case
+    // rather than an exotic one.
+    let clicked = false;
+    const llm = new ScriptedLlm([action({ type: 'click', target: SEARCH_BUTTON }, 'Book a table')]);
+
+    const { engine, surface } = engineWith(
+      llm,
+      {
+        click: (): void => {
+          clicked = true;
+        },
+        observe: (): { url: string } => {
+          if (clicked) {
+            return { url: 'https://demo.replay-ai.test/booking/new' };
+          }
+          return { url: ENTRY };
+        },
+      },
+      { policy: testPolicy({ allowedRoutes: ['/members'] }) },
+    );
+
+    const result = await engine.discover(REQUEST);
+
+    expect(result.status).toBe('failure');
+    if (result.status !== 'failure') {
+      return;
+    }
+    expect(result.kind).toBe('policy');
+    expect(result.code).toBe('DISCOVERY_POLICY_BLOCKED');
+    expect(result.message).toContain('POLICY_ROUTE_NOT_ALLOWED');
+    // The run stops there rather than carrying on somewhere it was never permitted to be.
+    expect(surface.methods().filter((method) => method === 'click')).toHaveLength(1);
+  });
+
   it('treats an action needing confirmation as an escalation rather than performing it', async () => {
     const llm = new ScriptedLlm([action({ type: 'click', target: SEARCH_BUTTON })]);
 
@@ -283,6 +320,29 @@ describe('model output that is not a decision', () => {
     expect(surface.methods()).toContain('click');
     // The rejected shape is fed back as the validator's words, never as the model's text.
     expect(llm.requests[1]?.instruction).toContain('Your previous answer was rejected');
+  });
+
+  it('tells the model the naming rule a rejected value name broke, rather than "invalid key"', async () => {
+    const llm = new ScriptedLlm([
+      action({ type: 'click', target: SEARCH_BUTTON }),
+      JSON.stringify({
+        type: 'complete',
+        summary: 'The member summary is on screen.',
+        outputs: { savings_balance: '5234.17' },
+      }),
+      JSON.stringify({
+        type: 'complete',
+        summary: 'The member summary is on screen.',
+        outputs: {},
+      }),
+    ]);
+
+    const { engine } = engineWith(llm);
+    await engine.discover(REQUEST);
+
+    // A re-ask that only said the key was invalid would leave the model guessing at which
+    // of the shapes it might have used is the one the contract wants.
+    expect(llm.requests[2]?.instruction).toContain('camelCase');
   });
 
   it('refuses an action type nobody implemented', async () => {

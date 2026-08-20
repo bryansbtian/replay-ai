@@ -43,8 +43,8 @@ describe('redacting a record', () => {
   });
 
   it('keeps a presence flag, which is the point of having one', () => {
-    expect(redactRecord({ anthropicApiKeyPresent: true })).toEqual({
-      anthropicApiKeyPresent: true,
+    expect(redactRecord({ apiKeyPresent: true })).toEqual({
+      apiKeyPresent: true,
     });
   });
 

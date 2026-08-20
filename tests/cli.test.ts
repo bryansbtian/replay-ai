@@ -64,15 +64,19 @@ describe('runCli', () => {
     expect(err()).toContain('--goal is required');
   });
 
-  it('emits a structured record for the config command without the API key', async () => {
-    const { deps, out } = harness({ ANTHROPIC_API_KEY: 'sk-secret-value', LOG_LEVEL: 'info' });
+  it('emits a structured record for the config command with the local runtime', async () => {
+    const { deps, out } = harness({ LOG_LEVEL: 'info', OLLAMA_MODEL: 'gemma3:27b' });
 
     expect(await runCli(['config'], deps)).toBe(EXIT_OK);
 
     const record = JSON.parse(out().trim()) as Record<string, unknown>;
     expect(record['message']).toBe('configuration loaded');
-    expect(record['anthropicApiKeyPresent']).toBe(true);
-    expect(out()).not.toContain('sk-secret-value');
+    expect(record['llm']).toEqual({
+      provider: 'ollama',
+      model: 'gemma3:27b',
+      baseUrl: 'http://127.0.0.1:11434',
+    });
+    expect(out()).not.toMatch(/sk-|apiKey|secret/i);
   });
 
   it('turns invalid configuration into a coded error on stderr, not a crash', async () => {
@@ -93,12 +97,15 @@ describe('runCli', () => {
     expect(out()).toContain('--input name=value');
   });
 
-  it('reports a replay argument mistake without launching anything', async () => {
+  it('reports a missing artifact path without a stack trace', async () => {
     const { deps, err } = harness();
 
-    expect(await runCli(['replay'], deps)).toBe(EXIT_ERROR);
+    expect(await runCli(['replay', '--artifact', 'capabilities/does-not-exist.json'], deps)).toBe(
+      EXIT_ERROR,
+    );
     expect(err()).toContain('REPLAY_COMMAND_INVALID');
-    expect(err()).toContain('--artifact');
+    expect(err()).toContain('Artifact not found');
+    expect(err()).not.toContain('at async');
   });
 
   it('reports the same version as package.json', () => {
@@ -112,7 +119,7 @@ describe('replay command arguments', () => {
   it('reads an artifact path and repeated inputs', () => {
     const args = parseReplayArguments([
       '--artifact',
-      'capabilities/examples/lookup-demo-member.json',
+      'tests/fixtures/capabilities/lookup-demo-member.json',
       '--input',
       'memberId=12345',
       '--input',
@@ -121,13 +128,19 @@ describe('replay command arguments', () => {
 
     expect(args.source).toEqual({
       kind: 'path',
-      path: 'capabilities/examples/lookup-demo-member.json',
+      path: 'tests/fixtures/capabilities/lookup-demo-member.json',
     });
     expect([...args.inputs]).toEqual([
       ['memberId', '12345'],
       ['region', 'eu'],
     ]);
     expect(args.headless).toBe(true);
+  });
+
+  it('opens a visible browser when --headed is supplied', () => {
+    const args = parseReplayArguments(['--artifact', 'a.json', '--headed']);
+
+    expect(args.headless).toBe(false);
   });
 
   it('reads a capability id', () => {
@@ -170,7 +183,7 @@ describe('replay command arguments', () => {
 
 describe('replay command inputs', () => {
   const artifact = deserializeCapabilityArtifact(
-    readFileSync('capabilities/examples/lookup-demo-member.json', 'utf8'),
+    readFileSync('tests/fixtures/capabilities/lookup-demo-member.json', 'utf8'),
   );
 
   it('keeps a declared string input as text', () => {

@@ -25,7 +25,7 @@ import { permissivePolicy } from './support/policy.js';
  * fixture through `ComputerSurface` and its Playwright implementation:
  *
  * ```text
- * capabilities/examples/lookup-demo-member.json
+ * tests/fixtures/capabilities/lookup-demo-member.json
  *   -> ReplayEngine -> StepExecutor -> ComputerSurface -> PlaywrightSurface -> the page
  * ```
  *
@@ -34,7 +34,7 @@ import { permissivePolicy } from './support/policy.js';
  * the only thing the suite changes is where the workflow starts.
  */
 
-const ARTIFACT_PATH = 'capabilities/examples/lookup-demo-member.json';
+const ARTIFACT_PATH = 'tests/fixtures/capabilities/lookup-demo-member.json';
 
 const FIXTURE_URL = pathToFileURL(resolve('tests/fixtures/member-lookup.html')).href;
 

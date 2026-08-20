@@ -60,8 +60,8 @@ Exit codes:
   0  Success            2  Business Outcome      4  Escalation Required
   1  Failure            3  Blocked By Policy
 
-Discovery uses a model. Replay does not, and a successful discovery is not yet saved as
-a capability artifact.
+Discovery uses a local Ollama model. Replay does not. Pass --capability-name on
+discover to compile a successful run into a reusable capability artifact.
 `;
 
 function printConfig(deps: CliDeps): number {

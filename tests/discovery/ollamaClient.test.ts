@@ -15,7 +15,7 @@ import { OllamaClient, type FetchLike } from '../../src/llm/ollama/index.js';
 const BASE_URL = 'http://127.0.0.1:11434';
 
 function clientWith(fetchLike: FetchLike): OllamaClient {
-  return new OllamaClient({ baseUrl: BASE_URL, model: 'llama3.1:8b', fetch: fetchLike });
+  return new OllamaClient({ baseUrl: BASE_URL, model: 'test-model', fetch: fetchLike });
 }
 
 function jsonResponse(body: unknown, status = 200): Response {
@@ -31,7 +31,7 @@ function answering(content: string, extra: Record<string, unknown> = {}): FetchL
   return () =>
     Promise.resolve(
       jsonResponse({
-        model: 'llama3.1:8b',
+        model: 'test-model',
         message: { role: 'assistant', content, ...extra },
         prompt_eval_count: 812,
         eval_count: 41,
@@ -46,7 +46,7 @@ describe('a successful call', () => {
     const response = await clientWith(answering(DECISION)).complete(REQUEST);
 
     expect(response.text).toBe(DECISION);
-    expect(response.model).toBe('llama3.1:8b');
+    expect(response.model).toBe('test-model');
     expect(response.inputTokens).toBe(812);
     expect(response.outputTokens).toBe(41);
   });
@@ -64,8 +64,9 @@ describe('a successful call', () => {
     await client.complete(REQUEST);
 
     expect(sent['stream']).toBe(false);
+    expect(sent['think']).toBe(false);
     expect(sent['format']).toBe('json');
-    expect(sent['model']).toBe('llama3.1:8b');
+    expect(sent['model']).toBe('test-model');
     // The system prompt and the one turn, and nothing else: no transcript accumulates
     // inside the client.
     expect(sent['messages']).toEqual([
@@ -78,7 +79,7 @@ describe('a successful call', () => {
     let seen = '';
     const client = new OllamaClient({
       baseUrl: 'http://127.0.0.1:11434/',
-      model: 'llama3.1:8b',
+      model: 'test-model',
       fetch: (url) => {
         seen = url;
         return Promise.resolve(jsonResponse({ message: { content: DECISION } }));
@@ -120,7 +121,7 @@ describe('a call that produced no answer', () => {
   });
 
   it('reports an empty response when the runtime answered with no message at all', async () => {
-    const client = clientWith(() => Promise.resolve(jsonResponse({ model: 'llama3.1:8b' })));
+    const client = clientWith(() => Promise.resolve(jsonResponse({ model: 'test-model' })));
 
     await expect(client.complete(REQUEST)).rejects.toMatchObject({
       code: 'MODEL_RESPONSE_EMPTY',

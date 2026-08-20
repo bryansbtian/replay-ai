@@ -45,6 +45,13 @@ export interface PlaywrightSurfaceOptions {
   readonly page: Page;
   readonly logger: Logger;
   readonly timeouts?: SurfaceTimeouts;
+  /**
+   * Milliseconds between keystrokes when filling a field.
+   *
+   * Zero (the default) replaces the value in one shot, which is what a headless replay
+   * needs. A headed demo sets a small delay so the typing is visible.
+   */
+  readonly typeDelayMs?: number;
 }
 
 /**
@@ -83,6 +90,7 @@ export class PlaywrightSurface implements ComputerSurface, HumanControlSurface {
   private readonly page: Page;
   private readonly logger: Logger;
   private readonly timeouts: SurfaceTimeouts;
+  private readonly typeDelayMs: number;
   private readonly resolver: LocatorResolver;
   private humanControl: HumanControlSession | undefined;
 
@@ -90,6 +98,7 @@ export class PlaywrightSurface implements ComputerSurface, HumanControlSurface {
     this.page = options.page;
     this.logger = options.logger.child({ surface: 'playwright' });
     this.timeouts = options.timeouts ?? DEFAULT_SURFACE_TIMEOUTS;
+    this.typeDelayMs = options.typeDelayMs ?? 0;
     this.resolver = new LocatorResolver({
       page: options.page,
       timeoutMs: this.timeouts.locatorMs,
@@ -192,10 +201,17 @@ export class PlaywrightSurface implements ComputerSurface, HumanControlSurface {
     const elapsed = startStopwatch();
     const resolved = await this.resolver.resolve(target, options.timeoutMs);
 
+    const timeout = options.timeoutMs ?? this.timeouts.actionMs;
+
     try {
       // `fill` replaces the current contents, which is the behaviour a replay needs:
       // appending to whatever a previous step left behind is not reproducible.
-      await resolved.locator.fill(value, { timeout: options.timeoutMs ?? this.timeouts.actionMs });
+      if (this.typeDelayMs > 0) {
+        await resolved.locator.fill('', { timeout });
+        await resolved.locator.pressSequentially(value, { delay: this.typeDelayMs, timeout });
+      } else {
+        await resolved.locator.fill(value, { timeout });
+      }
     } catch (error) {
       throw new ActionFailedError('fill', target.description, describeFailure(error), {
         cause: error,

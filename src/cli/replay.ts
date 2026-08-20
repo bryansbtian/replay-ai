@@ -35,7 +35,9 @@ Options:
   --artifact <path>    Path to a capability artifact JSON file
   --capability <id>    Id of an artifact in the configured capabilities directory
   --input name=value   An invocation input, repeatable
-  --headed             Run the browser with a visible window
+  --headed             Run the browser with a visible window. Types into fields
+                       key by key and waits a few seconds between steps so the
+                       run is watchable.
   --handoff            Pause for a person when the run cannot continue, and open the
                        operator interface. Implies a visible browser window.
 `;
@@ -58,6 +60,12 @@ interface ReplayArguments {
   /** Ask for a person rather than failing on a state the workflow cannot clear. */
   readonly handoff: boolean;
 }
+
+/** Pause between headed replay steps so a person can follow the workflow. */
+const HEADED_STEP_PAUSE_MS = 4_000;
+
+/** Per-key delay when typing into a field in a headed session. */
+const HEADED_TYPE_DELAY_MS = 80;
 
 function requireValue(argv: readonly string[], index: number, flag: string): string {
   const value = argv[index];
@@ -173,10 +181,23 @@ async function loadArtifact(
 ): Promise<CapabilityArtifact> {
   if (source.kind === 'path') {
     const path = resolve(source.path);
-    return deserializeCapabilityArtifact(await readFile(path, 'utf8'), { source: path });
+    try {
+      return deserializeCapabilityArtifact(await readFile(path, 'utf8'), { source: path });
+    } catch (error) {
+      if (isMissingFile(error)) {
+        throw new ReplayCommandError(
+          `Artifact not found: ${source.path}. Discovery only saves a capability after a successful run with --capability-name.`,
+        );
+      }
+      throw error;
+    }
   }
   const store = new FileArtifactStore({ directory: capabilitiesDir });
   return await store.load(source.id);
+}
+
+function isMissingFile(error: unknown): boolean {
+  return error instanceof Error && 'code' in error && error.code === 'ENOENT';
 }
 
 export interface ReplayCommandDeps {
@@ -192,14 +213,15 @@ export interface ReplayCommandDeps {
  * where to look, and neither of those should require piping the output through a JSON
  * tool. Nothing here can carry an invocation value.
  */
-function summarize(result: ReplayResult, evidencePath: string): string {
+function summarize(result: ReplayResult, evidencePath: string, capabilityName: string): string {
   const lines = [
     '',
     'Replay Completed',
     '',
-    `  Run ID:   ${result.replayId}`,
-    `  Status:   ${describeStatus(result)}`,
-    `  Evidence: ${evidencePath}`,
+    `  Capability: ${capabilityName}`,
+    `  Status:     ${describeStatus(result)}`,
+    `  Run ID:     ${result.replayId}`,
+    `  Evidence:   ${evidencePath}`,
     '',
   ];
   return lines.join('\n');
@@ -269,6 +291,12 @@ export async function runReplayCommand(
   // nobody can reach.
   const headless = args.headless && !args.handoff;
   const session = await launchPlaywrightSession({ headless });
+  let typeDelayMs = 0;
+  let stepPauseMs = 0;
+  if (!headless) {
+    typeDelayMs = HEADED_TYPE_DELAY_MS;
+    stepPauseMs = HEADED_STEP_PAUSE_MS;
+  }
 
   let result: ReplayResult;
   let handoff: HandoffContext | undefined;
@@ -277,6 +305,7 @@ export async function runReplayCommand(
       page: session.page,
       logger,
       timeouts: config.surfaceTimeouts,
+      typeDelayMs,
     });
 
     if (args.handoff) {
@@ -301,6 +330,7 @@ export async function runReplayCommand(
       evidence,
       timeouts: config.surfaceTimeouts,
       replayId: runId,
+      stepPauseMs,
       ...(handoff !== undefined && { intervention: handoff.coordinator }),
     });
     result = await engine.run(artifact, inputs);
@@ -325,7 +355,7 @@ export async function runReplayCommand(
   });
 
   deps.stdout(`${JSON.stringify(result, null, 2)}\n`);
-  deps.stderr(summarize(result, describePath(evidence.directory)));
+  deps.stderr(summarize(result, describePath(evidence.directory), artifact.name));
   for (const warning of evidence.warnings) {
     deps.stderr(`Evidence Warning: ${warning}\n`);
   }
@@ -344,7 +374,7 @@ function outcomeDetail(result: ReplayResult): Record<string, string | string[]> 
   if (result.status === 'businessOutcome') {
     return { code: result.code };
   }
-  const detail: Record<string, string> = { code: String(result.code), kind: result.kind };
+  const detail: Record<string, string> = { code: String(result.code), failureKind: result.kind };
   if (result.stepId !== undefined) {
     detail['stepId'] = result.stepId;
   }

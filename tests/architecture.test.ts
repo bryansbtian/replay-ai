@@ -300,19 +300,11 @@ describe('module boundaries', () => {
     expect(violations).toEqual([]);
   });
 
-  it('names a model provider in the llm layer and its composition roots, and nowhere else', () => {
-    // The strongest form of the isolation claim: an SDK import may appear in exactly the
-    // files whose job is to choose or wrap one.
-    const allowed = new Set([
-      join('src', 'llm', 'anthropic', 'AnthropicClient.ts'),
-      join('src', 'cli', 'llmClient.ts'),
-    ]);
-
+  it('names no hosted model SDK anywhere in source, which is how the isolation stays real', () => {
+    // The strongest form of the isolation claim: a hosted SDK import may not appear at
+    // all. The shipped client talks to a local runtime over plain HTTP.
     const violations: string[] = [];
     for (const file of sourceFiles('src')) {
-      if (allowed.has(file)) {
-        continue;
-      }
       for (const specifier of importsOf(file)) {
         if (specifier.startsWith('@anthropic-ai/')) {
           violations.push(`${file} imports ${specifier}`);

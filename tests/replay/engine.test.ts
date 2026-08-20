@@ -11,6 +11,7 @@ import {
   recordingLogger,
   searchButtonTarget,
   silentLogger,
+  singleStepArtifact,
   summaryTarget,
   TEST_TIMEOUTS,
   type JsonObject,
@@ -27,7 +28,10 @@ import { permissivePolicy } from './support/policy.js';
  * proved in `browserReplay.test.ts`.
  */
 
-function engineWith(surface: FakeSurface, options: { stepTimeoutMs?: number } = {}): ReplayEngine {
+function engineWith(
+  surface: FakeSurface,
+  options: { stepTimeoutMs?: number; stepPauseMs?: number } = {},
+): ReplayEngine {
   return new ReplayEngine({
     surface,
     logger: silentLogger(),
@@ -84,6 +88,22 @@ describe('a successful replay', () => {
       'await-summary',
       'read-balance',
     ]);
+  });
+
+  it('pauses after each step and after success when a step pause is configured', async () => {
+    const started = performance.now();
+
+    await engineWith(workingSurface(), { stepPauseMs: 25 }).run(
+      singleStepArtifact({
+        id: 'open-lookup',
+        type: 'navigate',
+        url: 'https://demo.replay-ai.test/members',
+      }),
+      {},
+    );
+
+    // One pause after the step, one after the success condition.
+    expect(performance.now() - started).toBeGreaterThanOrEqual(50);
   });
 
   it('types the resolved input into the field the step names', async () => {

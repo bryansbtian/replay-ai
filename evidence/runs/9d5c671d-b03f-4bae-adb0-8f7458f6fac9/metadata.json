@@ -1,17 +1,21 @@
 {
-  "runId": "832b79d2-6f39-4138-ae1f-d625fd4a276a",
+  "runId": "9d5c671d-b03f-4bae-adb0-8f7458f6fac9",
   "kind": "replay",
-  "capabilityId": "lookup-member-balance",
-  "capabilityVersion": 1,
-  "capabilityName": "Lookup Member Balance",
+  "capabilityId": "search-restaurants-by-cuisine",
+  "capabilityVersion": 2,
+  "capabilityName": "Search Restaurants By Cuisine",
   "inputNames": [
-    "memberId"
+    "cuisine"
   ],
   "policy": {
     "allowedHosts": [
-      "127.0.0.1:3100"
+      "localhost",
+      "127.0.0.1",
+      "seatping.biz",
+      "www.seatping.biz"
     ],
     "allowedSchemes": [
+      "https",
       "http"
     ],
     "allowedRoutes": [],
@@ -29,13 +33,13 @@
       "irreversible": "block"
     }
   },
-  "startedAt": "2026-08-19T18:25:44.788Z",
-  "completedAt": "2026-08-19T18:28:02.472Z",
+  "startedAt": "2026-08-20T02:24:39.857Z",
+  "completedAt": "2026-08-20T02:24:41.911Z",
   "status": "success",
   "outputNames": [
-    "savingsBalance"
+    "resultCount"
   ],
-  "durationMs": 136564,
+  "durationMs": 1901,
   "completedSteps": 5,
   "recoveries": 0,
   "warnings": []

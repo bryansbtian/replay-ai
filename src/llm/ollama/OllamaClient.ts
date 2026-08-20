@@ -5,10 +5,9 @@ import type { LLMClient, ModelRequest, ModelResponse } from '../LLMClient.js';
  * The Ollama implementation of the model boundary, for a model running on the machine
  * that is driving the run.
  *
- * It exists to prove the boundary is real. `LLMClient` was written so that a provider
- * could be replaced without discovery noticing, and the only way to know that is true is
- * to have two. Discovery imports neither this file nor the Anthropic one: it is handed a
- * client by a composition root and cannot tell which it received.
+ * Discovery imports this file only through a composition root. The engine is handed an
+ * `LLMClient` and cannot tell which runtime answered, which is what keeps a second
+ * implementation a change to that root and to nothing above it.
  *
  * There is no SDK. The chat endpoint is one POST returning one JSON object, and a
  * dependency to express that would be a dependency to audit and update for nothing.
@@ -33,11 +32,10 @@ const DEFAULT_MAX_OUTPUT_TOKENS = 1_024;
 /**
  * Ceiling for one call when the caller names none.
  *
- * Higher than a hosted client would use, because a local model is bounded by the machine
- * it runs on and a first call also pays for loading weights into memory, which a remote
- * endpoint has already done.
+ * Generous because a local model is bounded by the machine it runs on, a first call also
+ * pays for loading weights into memory, and the default 27B tag is slow to first token.
  */
-const DEFAULT_TIMEOUT_MS = 120_000;
+const DEFAULT_TIMEOUT_MS = 180_000;
 
 /**
  * Deterministic sampling.
@@ -162,6 +160,10 @@ export class OllamaClient implements LLMClient {
     const body = {
       model: this.model,
       stream: false,
+      // Reasoning tokens are discarded at this boundary anyway. Asking the runtime not
+      // to produce them keeps a large local model from spending seconds thinking about a
+      // one-action decision.
+      think: false,
       format: formatFor(request),
       options: {
         temperature: TEMPERATURE,

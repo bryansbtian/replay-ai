@@ -12,7 +12,7 @@ import {
 
 import { issuesOf, validArtifact } from './support/artifacts.js';
 
-const EXAMPLE_PATH = join('capabilities', 'examples', 'lookup-demo-customer.json');
+const EXAMPLE_PATH = join('tests', 'fixtures', 'capabilities', 'lookup-demo-customer.json');
 
 /**
  * Reads a committed file with its line endings normalized.
